@@ -3,14 +3,21 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"github.com/PuerkitoBio/goquery"
 	termutil "github.com/andrew-d/go-termutil"
+	"io/ioutil"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
+	"time"
 )
+
+const MAX_DOWNLOAD_SIZE = 104857600 // 100MB
 
 // custom struct for parshing phishtank urls
 type PhishUrls struct {
@@ -79,7 +86,9 @@ func GetUserInput() chan string {
 			// parse the url
 			u, err := url.Parse(myurl)
 			if err != nil {
-				fmt.Printf("[!] Error processing %s\n", myurl)
+				if verbose {
+					fmt.Printf("[!] Error processing %s\n", myurl)
+				}
 				continue
 			}
 			// split the paths from the parsed url
@@ -92,9 +101,6 @@ func GetUserInput() chan string {
 
 				// if we've seen the url already, keep moving
 				if _, ok := seen[tmp_url]; ok {
-					// if verbose {
-					//   fmt.Printf("[+] Already seen %s\n", tmp_url)
-					// }
 					continue
 				}
 
@@ -128,9 +134,97 @@ func IsPathAZip(client *http.Client, url string) bool {
 	contentlength := resp.ContentLength
 	contentType := resp.Header.Get("Content-Type")
 
-	if contentlength > 0 && strings.Contains(contentType, "zip") {
+	if contentlength > 0 && contentlength < MAX_DOWNLOAD_SIZE && strings.Contains(contentType, "zip") {
 		return true
 	}
 
 	return false
+}
+
+func ZipFromDir(client *http.Client, url string) string {
+
+	// perform a GET
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return ""
+	}
+
+	req.Header.Add("Connection", "close")
+	req.Close = true
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return ""
+	}
+
+	defer resp.Body.Close()
+
+	zdurl := ""
+
+	if resp.StatusCode == http.StatusOK {
+		bodyBytes, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return ""
+		}
+		bodyString := string(bodyBytes)
+		if !strings.Contains(bodyString, "Index Of /") {
+			return ""
+		}
+	}
+
+	// read body for hrefs
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return ""
+	}
+
+	doc.Find("a").Each(func(i int, s *goquery.Selection) {
+		href, ok := s.Attr("href")
+		if ok {
+			if strings.Contains(href, ".zip") {
+				if strings.HasSuffix(url, "/") {
+					zdurl = url + href
+				} else {
+					zdurl = url + "/" + href	
+				}
+			}
+		}
+	})
+
+	return zdurl
+}
+
+func MakeClient() *http.Client {
+
+	proxyURL := http.ProxyFromEnvironment
+
+	var tr = &http.Transport{
+		Proxy:               proxyURL,
+		MaxIdleConns:        1000,
+		MaxIdleConnsPerHost: 500,
+		MaxConnsPerHost:     500,
+		IdleConnTimeout:     time.Second,
+		DisableKeepAlives:   true,
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+			Renegotiation:      tls.RenegotiateOnceAsClient,
+		},
+		DialContext: (&net.Dialer{
+			Timeout:   time.Second * 5,
+			KeepAlive: time.Second,
+		}).DialContext,
+	}
+
+	re := func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+
+	client := &http.Client{
+		Transport:     tr,
+		CheckRedirect: re,
+		Timeout:       time.Second * 5,
+	}
+
+	return client
+
 }

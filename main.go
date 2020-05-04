@@ -1,39 +1,20 @@
 package main
 
 import (
-	"crypto/tls"
 	"flag"
 	"fmt"
 	"github.com/gookit/color"
-	"net"
-	"net/http"
 	"strings"
 	"sync"
-	"time"
 )
 
 const (
-	userAgent        = "Mozilla/5.0 (compatible; kitphishr/0.1; +https://github.com/cybercdh/kitphishr)"
-	defaultOutputDir = "./out"
+	defaultOutputDir = "./kits"
 )
 
 // globals arg vars
 var verbose bool
 var concurrency int
-
-var tr = &http.Transport{
-	TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
-	DisableKeepAlives: true,
-	DialContext: (&net.Dialer{
-		Timeout:   30 * time.Second,
-		KeepAlive: time.Second,
-		DualStack: true,
-	}).DialContext,
-}
-
-var c = &http.Client{
-	Transport: tr,
-}
 
 func main() {
 
@@ -41,81 +22,79 @@ func main() {
 	flag.BoolVar(&verbose, "v", false, "Get more info on URL attempts")
 	flag.Parse()
 
-	// timeout := time.Duration(to * 1000000)
-	timeout := time.Second * 5
+	client := MakeClient()
 
-	var tr = &http.Transport{
-		MaxIdleConns:      30,
-		IdleConnTimeout:   time.Second,
-		DisableKeepAlives: true,
-		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
-		DialContext: (&net.Dialer{
-			Timeout:   timeout,
-			KeepAlive: time.Second,
-		}).DialContext,
-	}
-
-	re := func(req *http.Request, via []*http.Request) error {
-		return http.ErrUseLastResponse
-	}
-
-	client := &http.Client{
-		Transport:     tr,
-		CheckRedirect: re,
-		Timeout:       timeout,
-	}
-
-	// client := MakeClient()
-	jobs := make(chan string)
+	zips := make(chan string)
+	dirs := make(chan string)
 
 	var wg sync.WaitGroup
 
 	for i := 0; i < concurrency; i++ {
 
-		wg.Add(1)
+		wg.Add(2)
 
 		go func() {
-
 			defer wg.Done()
 
-			for url := range jobs {
-
-				zipurl := url + ".zip"
-
-				// ignore http://example.com/.zip
-				if strings.HasSuffix(zipurl, "/.zip") {
-					continue
-				}
-
-				// ignore http://example.com.zip
-				if strings.Count(zipurl, "/") < 3 {
-					continue
-				}
+			for url := range zips {
 
 				if verbose {
-					fmt.Printf("[+]	Attempting %s\n", zipurl)
+					fmt.Printf("Attempting %s\n", url)
 				}
 
-				if IsPathAZip(client, zipurl) {
+				if IsPathAZip(client, url) {
 					if verbose {
-						color.Green.Printf("[+]	Found phishing kit from path at %s\n", zipurl)
+						color.Green.Printf("Found phishing kit from path at %s\n", url)
 					} else {
-						fmt.Println(zipurl)
+						fmt.Println(url)
 					}
 				}
 			}
-
 		}()
 
-	}
+		go func() {
+			defer wg.Done()
 
-	// get input and send urls to jobs chan
+			for url := range dirs {
+				if verbose {
+					fmt.Printf("Checking for open directory at %s\n", url)
+				}
+
+				zdurl := ZipFromDir(client, url)
+				if zdurl == "" {
+					continue
+				}
+				if verbose {
+					color.Green.Printf("Found a zip from open directory at %s\n", zdurl)
+				} else {
+					fmt.Println(zdurl)
+				}
+			}
+		}()
+
+	} // concurrency
+
+	// get input eithe from user or phishtank
 	urls := GetUserInput()
+
 	for url := range urls {
-		jobs <- url
+
+		// send to dirs channel
+		dirs <- url
+
+		// prep and send to zips channel
+		zipurl := url + ".zip"
+
+		// ignore http://example.com/.zip
+		// ignore http://example.com.zip
+		if strings.HasSuffix(zipurl, "/.zip") || strings.Count(zipurl, "/") < 3 {
+			continue
+		}
+
+		zips <- zipurl
 	}
 
-	close(jobs)
-
+	close(zips)
+	close(dirs)
 	wg.Wait()
 }
