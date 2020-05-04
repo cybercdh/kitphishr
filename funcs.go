@@ -26,7 +26,14 @@ type PhishUrls struct {
 
 // read from the PhishTank URL and return just the urls
 func GetPhishTankURLs() ([]PhishUrls, error) {
-	pturl := "http://data.phishtank.com/data/0b393f31fd33920fb29454c5aa984e90e6e16a24be239f69c20f58986d454a7f/online-valid.json"
+
+	pturl := "http://data.phishtank.com/data/online-valid.json"
+
+	apiKey := os.Getenv("PT_API_KEY")
+	if apiKey != "" {
+		pturl = fmt.Sprintf("http://data.phishtank.com/data/%s/online-valid.json", apiKey)
+	}
+
 	resp, err := http.Get(pturl)
 	if err != nil {
 		return nil, err
@@ -131,10 +138,9 @@ func IsPathAZip(client *http.Client, url string) bool {
 		return false
 	}
 
-	contentlength := resp.ContentLength
 	contentType := resp.Header.Get("Content-Type")
 
-	if contentlength > 0 && contentlength < MAX_DOWNLOAD_SIZE && strings.Contains(contentType, "zip") {
+	if contentlength > 0 && strings.Contains(contentType, "zip") {
 		return true
 	}
 
@@ -178,6 +184,7 @@ func ZipFromDir(client *http.Client, url string) string {
 		return ""
 	}
 
+	// todo - crawl folders to find more zips
 	doc.Find("a").Each(func(i int, s *goquery.Selection) {
 		href, ok := s.Attr("href")
 		if ok {
@@ -185,7 +192,7 @@ func ZipFromDir(client *http.Client, url string) string {
 				if strings.HasSuffix(url, "/") {
 					zdurl = url + href
 				} else {
-					zdurl = url + "/" + href	
+					zdurl = url + "/" + href
 				}
 			}
 		}
