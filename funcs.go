@@ -185,12 +185,12 @@ func MakeClient() *http.Client {
 	proxyURL := http.ProxyFromEnvironment
 
 	var tr = &http.Transport{
-		Proxy:               proxyURL,
+		Proxy: proxyURL,
 		// MaxIdleConns:        1000,
 		// MaxIdleConnsPerHost: 500,
 		// MaxConnsPerHost:     500,
 		// IdleConnTimeout:     time.Second * 1,
-		DisableKeepAlives:   true,
+		DisableKeepAlives: true,
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: true,
 			Renegotiation:      tls.RenegotiateOnceAsClient,
