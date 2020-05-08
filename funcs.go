@@ -26,8 +26,8 @@ type PhishUrls struct {
 
 type Response struct {
 	StatusCode    int64
-	Body 					[]byte
-	URL 					string
+	Body          []byte
+	URL           string
 	ContentLength int64
 	ContentType   string
 }
@@ -173,10 +173,10 @@ func GenerateTargets(urls []PhishUrls) chan string {
 // func ZipFromDir(resp *http.Response) (string, error) {
 func ZipFromDir(resp Response) (string, error) {
 
-	ziphref := ""	
+	ziphref := ""
 
 	// read body for hrefs
-	data :=bytes.NewReader(resp.Body)
+	data := bytes.NewReader(resp.Body)
 	doc, err := goquery.NewDocumentFromReader(data)
 	if err != nil {
 		return ziphref, err
@@ -225,7 +225,7 @@ func MakeClient() *http.Client {
 
 	client := &http.Client{
 		Transport: tr,
-		Timeout: time.Second * 15,
+		Timeout:   time.Second * 15,
 	}
 
 	return client
@@ -252,7 +252,7 @@ func AttemptTarget(client *http.Client, url string) (Response, error) {
 	}
 
 	defer httpresp.Body.Close()
-	
+
 	resp := NewResponse(httpresp, url)
 
 	resp.ContentLength = httpresp.ContentLength
@@ -265,16 +265,14 @@ func AttemptTarget(client *http.Client, url string) (Response, error) {
 /*
 	saves the resp.body to a file
 	calls it name.ext_sha1
+	note uses first half of sha1 hash to keep filenames
+	relatively short.
 	returns name of file, err
 */
-// func SaveResponse(resp *http.Response) (string, error) {
 func SaveResponse(resp Response) (string, error) {
 
-	filename := ""
-
-	data := []byte(resp.Body)
-	checksum := sha1.Sum(data)
-	filename = fmt.Sprintf("%s_%x", path.Base(resp.URL), checksum)
+	checksum := sha1.Sum(resp.Body)
+	filename := fmt.Sprintf("%s_%x", path.Base(resp.URL), checksum[:len(checksum)/2])
 
 	// create the output file
 	out, err := os.Create(defaultOutputDir + "/" + filename)
@@ -285,6 +283,6 @@ func SaveResponse(resp Response) (string, error) {
 
 	// write the body to file
 	out.Write(resp.Body)
-	
+
 	return filename, err
 }

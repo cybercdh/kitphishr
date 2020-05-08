@@ -75,20 +75,21 @@ func main() {
 	// determines if we've found a zip from a url folder
 	// or if we've found an open directory and looks for a zip within
 	var rg sync.WaitGroup
+
 	for i := 0; i < concurrency/2; i++ {
+
 		rg.Add(1)
 
 		go func() {
 
 			defer rg.Done()
 
-			// for resp := range responses {
 			for resp := range responses {
 
 				if resp.StatusCode != http.StatusOK {
 					continue
 				}
-				
+
 				requrl := resp.URL
 
 				// if we found a zip from a URL path
@@ -157,8 +158,9 @@ func main() {
 			for resp := range tosave {
 				filename, err := SaveResponse(resp)
 				if err != nil {
-					// color.Red.Printf("There was an error saving %s : %s\n", resp.Request.URL.String(), err)
-					color.Red.Printf("There was an error saving %s : %s\n", resp.URL, err)
+					if verbose {
+						color.Red.Printf("There was an error saving %s : %s\n", resp.URL, err)
+					}
 					continue
 				} else {
 					if verbose {
