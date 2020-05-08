@@ -29,9 +29,7 @@ func main() {
 	client := MakeClient()
 
 	targets := make(chan string)
-	// responses := make(chan *http.Response)
 	responses := make(chan Response)
-	// tosave := make(chan *http.Response)
 	tosave := make(chan Response)
 
 	// create the output directory, ready to save files to
@@ -112,7 +110,8 @@ func main() {
 					}
 				}
 
-				// todo - if resp contains index of, parse the links
+				// check if we've found an open dir containing a zip
+				// todo - walk an open dir for zips in other folders
 				href, err := ZipFromDir(resp)
 				if err != nil {
 					continue
@@ -148,7 +147,7 @@ func main() {
 	// save group
 	var sg sync.WaitGroup
 
-	// give is a few threads to play with
+	// give this a few threads to play with
 	for i := 0; i < 10; i++ {
 
 		sg.Add(1)
