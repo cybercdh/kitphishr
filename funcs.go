@@ -209,16 +209,14 @@ func MakeClient() *http.Client {
 		Proxy: proxyURL,
 		// MaxIdleConns:        1000,
 		// MaxIdleConnsPerHost: 500,
-		// MaxConnsPerHost:     500,
-		// IdleConnTimeout:     time.Second * 1,
+		MaxConnsPerHost:   50,
 		DisableKeepAlives: true,
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: true,
 			Renegotiation:      tls.RenegotiateOnceAsClient,
 		},
 		DialContext: (&net.Dialer{
-			Timeout: 30 * time.Second,
-			// KeepAlive: time.Second,
+			Timeout:   30 * time.Second,
 			DualStack: true,
 		}).DialContext,
 	}
@@ -242,7 +240,7 @@ func AttemptTarget(client *http.Client, url string) (Response, error) {
 		return Response{}, err
 	}
 
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.103 Safari/537.36")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.149 Safari/537.36")
 	req.Header.Add("Connection", "close")
 	req.Close = true
 

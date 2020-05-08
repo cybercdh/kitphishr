@@ -47,7 +47,7 @@ func main() {
 	// send the output to responses channel for further processing
 	var wg sync.WaitGroup
 
-	for i := 0; i < concurrency/2; i++ {
+	for i := 0; i < concurrency; i++ {
 
 		wg.Add(1)
 
@@ -162,7 +162,7 @@ func main() {
 						color.Red.Printf("There was an error saving %s : %s\n", resp.URL, err)
 					}
 					continue
-				} else {
+				} else if filename != "" {
 					if verbose {
 						color.Yellow.Printf("Successfully saved %s\n", filename)
 					}
