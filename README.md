@@ -39,4 +39,10 @@ You need to have Go installed and configured (i.e. with $GOPATH/bin in your $PAT
 `go get -u github.com/cybercdh/kitphishr`
 
 
+## Thanks
 
+A lot of Go concepts were taken from @tomnomnom's excellent repos, particularly [meg](https://github.com/tomnomnom/meg)
+
+Additionally, I took inspiration from [ffuf](https://github.com/ffuf/ffuf)
+
+Thanks to both developers for their awesome open-source tools.
