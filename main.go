@@ -29,8 +29,10 @@ func main() {
 	client := MakeClient()
 
 	targets := make(chan string)
-	responses := make(chan *http.Response)
-	tosave := make(chan *http.Response)
+	// responses := make(chan *http.Response)
+	responses := make(chan Response)
+	// tosave := make(chan *http.Response)
+	tosave := make(chan Response)
 
 	// create the output directory, ready to save files to
 	if downloadKits {
@@ -80,24 +82,20 @@ func main() {
 
 			defer rg.Done()
 
+			// for resp := range responses {
 			for resp := range responses {
 
 				if resp.StatusCode != http.StatusOK {
 					continue
 				}
-
-				defer resp.Body.Close()
-
-				requrl := resp.Request.URL.String()
+				
+				requrl := resp.URL
 
 				// if we found a zip from a URL path
 				if strings.HasSuffix(requrl, ".zip") {
 
-					contentlength := resp.ContentLength
-					contentType := resp.Header.Get("Content-Type")
-
 					// make sure it's a valid zip
-					if contentlength > 0 && contentlength < MAX_DOWNLOAD_SIZE && strings.Contains(contentType, "zip") {
+					if resp.ContentLength > 0 && resp.ContentLength < MAX_DOWNLOAD_SIZE && strings.Contains(resp.ContentType, "zip") {
 
 						if verbose {
 							color.Green.Printf("Zip found from URL folder at %s\n", requrl)
@@ -159,7 +157,8 @@ func main() {
 			for resp := range tosave {
 				filename, err := SaveResponse(resp)
 				if err != nil {
-					color.Red.Printf("There was an error saving %s : %s\n", resp.Request.URL.String(), err)
+					// color.Red.Printf("There was an error saving %s : %s\n", resp.Request.URL.String(), err)
+					color.Red.Printf("There was an error saving %s : %s\n", resp.URL, err)
 					continue
 				} else {
 					if verbose {

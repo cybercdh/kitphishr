@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"github.com/PuerkitoBio/goquery"
 	termutil "github.com/andrew-d/go-termutil"
-	"io"
 	"io/ioutil"
 	"net"
 	"net/http"
@@ -23,6 +22,26 @@ import (
 // custom struct for parsing phishtank urls
 type PhishUrls struct {
 	URL string `json:"url"`
+}
+
+type Response struct {
+	StatusCode    int64
+	Body 					[]byte
+	URL 					string
+	ContentLength int64
+	ContentType   string
+}
+
+func NewResponse(httpresp *http.Response, url string) Response {
+	var resp Response
+	resp.StatusCode = int64(httpresp.StatusCode)
+
+	if respbody, err := ioutil.ReadAll(httpresp.Body); err == nil {
+		resp.Body = respbody
+	}
+
+	resp.URL = url
+	return resp
 }
 
 /*
@@ -151,12 +170,14 @@ func GenerateTargets(urls []PhishUrls) chan string {
 	return _urls
 }
 
-func ZipFromDir(resp *http.Response) (string, error) {
+// func ZipFromDir(resp *http.Response) (string, error) {
+func ZipFromDir(resp Response) (string, error) {
 
-	ziphref := ""
+	ziphref := ""	
 
 	// read body for hrefs
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	data :=bytes.NewReader(resp.Body)
+	doc, err := goquery.NewDocumentFromReader(data)
 	if err != nil {
 		return ziphref, err
 	}
@@ -202,13 +223,8 @@ func MakeClient() *http.Client {
 		}).DialContext,
 	}
 
-	// re := func(req *http.Request, via []*http.Request) error {
-	// 	return http.ErrUseLastResponse
-	// }
-
 	client := &http.Client{
 		Transport: tr,
-		// CheckRedirect: re,
 		Timeout: time.Second * 15,
 	}
 
@@ -220,21 +236,27 @@ func MakeClient() *http.Client {
 	peform a GET against the target URL
 	return the response
 */
-func AttemptTarget(client *http.Client, url string) (*http.Response, error) {
-
+func AttemptTarget(client *http.Client, url string) (Response, error) {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return nil, err
+		return Response{}, err
 	}
 
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.103 Safari/537.36")
 	req.Header.Add("Connection", "close")
 	req.Close = true
 
-	resp, err := client.Do(req)
+	httpresp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return Response{}, err
 	}
+
+	defer httpresp.Body.Close()
+	
+	resp := NewResponse(httpresp, url)
+
+	resp.ContentLength = httpresp.ContentLength
+	resp.ContentType = httpresp.Header.Get("Content-Type")
 
 	return resp, nil
 
@@ -245,22 +267,14 @@ func AttemptTarget(client *http.Client, url string) (*http.Response, error) {
 	calls it name.ext_sha1
 	returns name of file, err
 */
-func SaveResponse(resp *http.Response) (string, error) {
+// func SaveResponse(resp *http.Response) (string, error) {
+func SaveResponse(resp Response) (string, error) {
 
 	filename := ""
 
-	// convert the body to bytes to generate the sha1sum
-	bodyBytes, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return filename, err
-	}
-
-	data := []byte(bodyBytes)
+	data := []byte(resp.Body)
 	checksum := sha1.Sum(data)
-	filename = fmt.Sprintf("%s_%x", path.Base(resp.Request.URL.Path), checksum)
-
-	// restore the ioreader to get back the content of resp.body
-	resp.Body = ioutil.NopCloser(bytes.NewBuffer(bodyBytes))
+	filename = fmt.Sprintf("%s_%x", path.Base(resp.URL), checksum)
 
 	// create the output file
 	out, err := os.Create(defaultOutputDir + "/" + filename)
@@ -270,6 +284,7 @@ func SaveResponse(resp *http.Response) (string, error) {
 	defer out.Close()
 
 	// write the body to file
-	_, err = io.Copy(out, resp.Body)
+	out.Write(resp.Body)
+	
 	return filename, err
 }
