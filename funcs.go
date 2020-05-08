@@ -170,7 +170,10 @@ func GenerateTargets(urls []PhishUrls) chan string {
 	return _urls
 }
 
-// func ZipFromDir(resp *http.Response) (string, error) {
+/*
+	parse the response to see if we've hit an open dir
+	if we have, then look for hrefs that are zips
+*/
 func ZipFromDir(resp Response) (string, error) {
 
 	ziphref := ""
