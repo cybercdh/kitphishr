@@ -1,6 +1,3 @@
-![kitphishr logo](https://github.com/cybercdh/kitphishr/blob/assets/default.png)
-
-
 ## kitphishr
 Hunts for Phishing Kit source code by traversing URL folders and searching in open directories for zip files. 
 
