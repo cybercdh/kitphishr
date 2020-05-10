@@ -265,7 +265,7 @@ func AttemptTarget(client *http.Client, url string) (Response, error) {
 
 /*
 	saves the resp.body to a file
-	calls it name.ext_sha1
+	calls it sha1_name.ext
 	note uses first half of sha1 hash to keep filenames
 	relatively short.
 	returns name of file, err
@@ -273,7 +273,7 @@ func AttemptTarget(client *http.Client, url string) (Response, error) {
 func SaveResponse(resp Response) (string, error) {
 
 	checksum := sha1.Sum(resp.Body)
-	filename := fmt.Sprintf("%s_%x", path.Base(resp.URL), checksum[:len(checksum)/2])
+	filename := fmt.Sprintf("%x_%s",checksum[:len(checksum)/2], path.Base(resp.URL))
 
 	// create the output file
 	out, err := os.Create(defaultOutputDir + "/" + filename)
