@@ -17,6 +17,8 @@ or simply
 
 `$ kitphishr`
 
+## Demo
+
 ![](https://github.com/cybercdh/kitphishr/blob/master/demo.gif)
 
 ## Options
