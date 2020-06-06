@@ -3,7 +3,7 @@ Hunts for Phishing Kit source code by traversing URL folders and searching in op
 
 The code handles large lists of URLs which may be hosting malicious content. You can supply your own list of URLs or alternatively the code will parse the latest list from [PhishTank](https://www.phishtank.com/) so you can easily go hunting for badness.
 
-Phishing kit source code is particularly valuable to blue-teamers as often it's easy to find the identity of the bad-guy in addition to log file locations where victim data is stored on the server.
+Phishing kit source code is particularly valuable to blue-teamers as often it's easy to find the identity the bad-guy in addition to log file locations where victim data is stored on the server.
 
 ## Recommended Usage
 
