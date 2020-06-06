@@ -15,11 +15,13 @@ const MAX_DOWNLOAD_SIZE = 104857600 // 100MB
 var verbose bool
 var downloadKits bool
 var concurrency int
+var to int
 var defaultOutputDir string
 
 func main() {
 
 	flag.IntVar(&concurrency, "c", 50, "set the concurrency level")
+	flag.IntVar(&to, "t", 45, "set the connection timeout in seconds")
 	flag.BoolVar(&verbose, "v", false, "get more info on URL attempts")
 	flag.BoolVar(&downloadKits, "d", false, "option to download suspected phishing kits")
 	flag.StringVar(&defaultOutputDir, "o", "kits", "directory to save output files")
