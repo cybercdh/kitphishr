@@ -6,6 +6,7 @@ import (
 	"crypto/sha1"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/PuerkitoBio/goquery"
 	termutil "github.com/andrew-d/go-termutil"
@@ -209,9 +210,7 @@ func MakeClient() *http.Client {
 	proxyURL := http.ProxyFromEnvironment
 
 	var tr = &http.Transport{
-		Proxy: proxyURL,
-		// MaxIdleConns:        1000,
-		// MaxIdleConnsPerHost: 500,
+		Proxy:             proxyURL,
 		MaxConnsPerHost:   50,
 		DisableKeepAlives: true,
 		TLSClientConfig: &tls.Config{
@@ -219,14 +218,14 @@ func MakeClient() *http.Client {
 			Renegotiation:      tls.RenegotiateOnceAsClient,
 		},
 		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
+			Timeout:   time.Second * time.Duration(to),
 			DualStack: true,
 		}).DialContext,
 	}
 
 	client := &http.Client{
 		Transport: tr,
-		Timeout:   time.Second * 15,
+		Timeout:   time.Second * time.Duration(to),
 	}
 
 	return client
@@ -273,8 +272,11 @@ func AttemptTarget(client *http.Client, url string) (Response, error) {
 func SaveResponse(resp Response) (string, error) {
 
 	checksum := sha1.Sum(resp.Body)
-	filename := fmt.Sprintf("%x_%s",checksum[:len(checksum)/2], path.Base(resp.URL))
+	filename := fmt.Sprintf("%x_%s", checksum[:len(checksum)/2], path.Base(resp.URL))
 
+	if strings.HasPrefix(filename, "da39a3ee5e6b4b0d3255") {
+		return "", errors.New("0bytefile")
+	}
 	// create the output file
 	out, err := os.Create(defaultOutputDir + "/" + filename)
 	if err != nil {
@@ -285,5 +287,5 @@ func SaveResponse(resp Response) (string, error) {
 	// write the body to file
 	out.Write(resp.Body)
 
-	return filename, err
+	return filename, nil
 }
