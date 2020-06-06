@@ -32,6 +32,9 @@ or simply
 -o string
     directory to save output files (default "kits")
 
+-t int
+    set the connection timeout in seconds
+
 -v  get more info on URL attempts
 ```
 
