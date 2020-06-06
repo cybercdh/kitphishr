@@ -17,7 +17,7 @@ or simply
 
 `$ kitphishr`
 
-[![asciicast](https://asciinema.org/a/1JjADJWEWI1vG7wxNwAcaqmoD.svg)](https://asciinema.org/a/1JjADJWEWI1vG7wxNwAcaqmoD)
+(https://imgur.com/KZfLzAk)
 
 ## Options
 
