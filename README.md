@@ -37,6 +37,17 @@ You need to have [Go installed](https://golang.org/doc/install) and configured (
 
 `go get -u github.com/cybercdh/kitphishr`
 
+## Configuration
+
+Kitphishr will work just fine right out of the box, but if you're going to be running this tool a lot then I suggest getting a [free API key from Phishtank](https://www.phishtank.com/api_register.php)
+
+Then, you can save this as an environment variable which Kitphishr will find and use:
+
+`$ export PT_API_KEY=<your_key>`
+
+or, to make this persist, add the following to your `~/.bashrc` file:
+
+`export PT_API_KEY=<your_key>`
 
 ## Thanks
 
@@ -44,4 +55,6 @@ A lot of Go concepts were taken from @tomnomnom's excellent repos, particularly 
 
 Additionally, I took inspiration from [ffuf](https://github.com/ffuf/ffuf)
 
-Thanks to both developers for their awesome open-source tools.
+Finally, the initial idea for writing this tool came from great research from [Duo Labs](https://github.com/duo-labs/phish-collect)
+
+Thanks to each of these developers for their awesome open-source tools.
