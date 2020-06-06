@@ -17,7 +17,7 @@ or simply
 
 `$ kitphishr`
 
-[Imgur](https://i.imgur.com/KZfLzAk.gifv)
+![](https://i.imgur.com/KZfLzAk.gifv)
 
 ## Options
 
