@@ -34,7 +34,7 @@ or simply
     directory to save output files (default "kits")
 
 -t int
-    set the connection timeout in seconds
+    set the connection timeout in seconds(useful to ensure the download of large files)
 
 -v  get more info on URL attempts
 ```

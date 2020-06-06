@@ -21,7 +21,7 @@ var defaultOutputDir string
 func main() {
 
 	flag.IntVar(&concurrency, "c", 50, "set the concurrency level")
-	flag.IntVar(&to, "t", 45, "set the connection timeout in seconds")
+	flag.IntVar(&to, "t", 45, "set the connection timeout in seconds (useful to ensure the download of large files)")
 	flag.BoolVar(&verbose, "v", false, "get more info on URL attempts")
 	flag.BoolVar(&downloadKits, "d", false, "option to download suspected phishing kits")
 	flag.StringVar(&defaultOutputDir, "o", "kits", "directory to save output files")
