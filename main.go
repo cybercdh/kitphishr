@@ -6,6 +6,7 @@ import (
 	"github.com/gookit/color"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -41,6 +42,14 @@ func main() {
 			fmt.Printf("There was an error creating the output directory : %s\n", err)
 			os.Exit(1)
 		}
+	}
+
+	// open the index file
+	indexFile := filepath.Join(defaultOutputDir, "/index")
+	index, err := os.OpenFile(indexFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to open index file for writing: %s\n", err)
+		os.Exit(1)
 	}
 
 	// worker group to fetch the urls from targets channel
@@ -167,6 +176,9 @@ func main() {
 					if verbose {
 						color.Yellow.Printf("Successfully saved %s\n", filename)
 					}
+					// update the index file
+					line := fmt.Sprintf("%s : %s\n", resp.URL, filename)
+					fmt.Fprintf(index, "%s", line)
 				}
 			}
 		}()
