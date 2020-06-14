@@ -18,6 +18,7 @@ var downloadKits bool
 var concurrency int
 var to int
 var defaultOutputDir string
+var index *os.File
 
 func main() {
 
@@ -42,14 +43,13 @@ func main() {
 			fmt.Printf("There was an error creating the output directory : %s\n", err)
 			os.Exit(1)
 		}
-	}
-
-	// open the index file
-	indexFile := filepath.Join(defaultOutputDir, "/index")
-	index, err := os.OpenFile(indexFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to open index file for writing: %s\n", err)
-		os.Exit(1)
+		// open the index file
+		indexFile := filepath.Join(defaultOutputDir, "/index")
+		index, err = os.OpenFile(indexFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to open index file for writing: %s\n", err)
+			os.Exit(1)
+		}
 	}
 
 	// worker group to fetch the urls from targets channel
