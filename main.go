@@ -199,7 +199,6 @@ func main() {
 		targets <- url
 	}
 
-	// netflix and chill.
 	close(targets)
 	wg.Wait()
 
