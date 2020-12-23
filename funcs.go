@@ -121,7 +121,7 @@ func GenerateTargets(urls []PhishUrls) chan string {
 
 	go func() {
 
-		seen := make(map[string]bool)
+		// seen := make(map[string]bool)
 
 		for _, row := range urls {
 			myurl := row.URL
@@ -140,12 +140,12 @@ func GenerateTargets(urls []PhishUrls) chan string {
 				tmp_url := fmt.Sprintf(u.Scheme + "://" + u.Host + strings.Join(_path, "/"))
 
 				// if we've seen the url already, keep moving
-				if _, ok := seen[tmp_url]; ok {
-					continue
-				}
+				// if _, ok := seen[tmp_url]; ok {
+					// continue
+				// }
 
 				// add to seen
-				seen[tmp_url] = true
+				// seen[tmp_url] = true
 
 				// feed the _urls channels
 				_urls <- tmp_url
@@ -159,7 +159,7 @@ func GenerateTargets(urls []PhishUrls) chan string {
 				}
 
 				// add this one to seen too
-				seen[zipurl] = true
+				// seen[zipurl] = true
 
 				// feed the _urls channels
 				_urls <- zipurl
