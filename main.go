@@ -11,7 +11,12 @@ import (
 	"sync"
 )
 
-const MAX_DOWNLOAD_SIZE = 104857600 // 100MB
+const (
+	userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.149 Safari/537.36"
+	MAX_DOWNLOAD_SIZE = 104857600 // 100mb
+	// defaultOutputDir = "./out"
+)
+
 
 var verbose bool
 var downloadKits bool
@@ -166,7 +171,7 @@ func main() {
 		go func() {
 			defer sg.Done()
 			for resp := range tosave {
-				filename, err := SaveResponse(resp)
+				filename, err := resp.SaveResponse()
 				if err != nil {
 					if verbose {
 						color.Red.Printf("There was an error saving %s : %s\n", resp.URL, err)
