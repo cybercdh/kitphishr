@@ -3,10 +3,10 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"crypto/sha1"
+	// "crypto/sha1"
 	"crypto/tls"
 	"encoding/json"
-	"errors"
+	// "errors"
 	"fmt"
 	"github.com/PuerkitoBio/goquery"
 	termutil "github.com/andrew-d/go-termutil"
@@ -242,7 +242,7 @@ func AttemptTarget(client *http.Client, url string) (Response, error) {
 		return Response{}, err
 	}
 
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.149 Safari/537.36")
+	req.Header.Set("User-Agent", userAgent)
 	req.Header.Add("Connection", "close")
 	req.Close = true
 
@@ -269,23 +269,50 @@ func AttemptTarget(client *http.Client, url string) (Response, error) {
 	relatively short.
 	returns name of file, err
 */
-func SaveResponse(resp Response) (string, error) {
+func (r Response) SaveResponse() (string, error) {
+	/* 
+		WIP
+		use the hostname as the filename when saving
+	*/
+	
+	// content := []byte(r.String())
+	content := r.Body
+	// TODO
+	// check if r.Body is > 0?
 
-	checksum := sha1.Sum(resp.Body)
-	filename := fmt.Sprintf("%x_%s", checksum[:len(checksum)/2], path.Base(resp.URL))
+	// checksum := sha1.Sum(content)
+	// checksum := sha1.Sum(r.Body)
+	replacer := strings.NewReplacer("/", "_", ":", "")
+	filename := replacer.Replace(r.URL)
+	parts := []string{defaultOutputDir}
+	parts = append(parts, filename)
+	p := path.Join(parts...)
 
-	if strings.HasPrefix(filename, "da39a3ee5e6b4b0d3255") {
-		return "", errors.New("0bytefile")
+	// filename := fmt.Sprintf("%x_%s", checksum[:len(checksum)/2], path.Base(resp.URL))
+
+	if _, err := os.Stat(path.Dir(p)); os.IsNotExist(err) {
+		err = os.MkdirAll(path.Dir(p), 0750)
+		if err != nil {
+			return p, err
+		}
 	}
-	// create the output file
-	out, err := os.Create(defaultOutputDir + "/" + filename)
+
+	err := ioutil.WriteFile(p, content, 0640)
 	if err != nil {
-		return filename, err
+		return p, err
 	}
-	defer out.Close()
+
+	// if strings.HasPrefix(filename, "da39a3ee5e6b4b0d3255") {
+	// 	return "", errors.New("0bytefile")
+	// }
+	// create the output file
+	// out, err := os.Create(defaultOutputDir + "/" + filename)
+	// if err != nil {
+	// 	return filename, err
+	// }
+	// defer out.Close()
 
 	// write the body to file
-	out.Write(resp.Body)
-
-	return filename, nil
+	// out.Write(resp.Body)
+	return p, nil
 }
