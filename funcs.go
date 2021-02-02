@@ -242,7 +242,7 @@ func AttemptTarget(client *http.Client, url string) (Response, error) {
 		return Response{}, err
 	}
 
-	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("User-Agent", ua)
 	req.Header.Add("Connection", "close")
 	req.Close = true
 

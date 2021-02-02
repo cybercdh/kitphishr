@@ -14,7 +14,6 @@ import (
 const (
 	userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.149 Safari/537.36"
 	MAX_DOWNLOAD_SIZE = 104857600 // 100mb
-	// defaultOutputDir = "./out"
 )
 
 
@@ -23,6 +22,7 @@ var downloadKits bool
 var concurrency int
 var to int
 var defaultOutputDir string
+var ua string
 var index *os.File
 
 func main() {
@@ -31,6 +31,7 @@ func main() {
 	flag.IntVar(&to, "t", 45, "set the connection timeout in seconds (useful to ensure the download of large files)")
 	flag.BoolVar(&verbose, "v", false, "get more info on URL attempts")
 	flag.BoolVar(&downloadKits, "d", false, "option to download suspected phishing kits")
+	flag.StringVar(&ua, "u", userAgent, "User-Agent for requests")
 	flag.StringVar(&defaultOutputDir, "o", "kits", "directory to save output files")
 
 	flag.Parse()
