@@ -273,19 +273,24 @@ func (r Response) SaveResponse() (string, error) {
 	/* 
 		WIP
 		use the hostname as the filename when saving
+
+		TODO
+		check if r.Body > 0
+		have option to overwrite existing files?
 	*/
 	
 	// content := []byte(r.String())
 	content := r.Body
 	// TODO
 	// check if r.Body is > 0?
+	// 
 
 	// checksum := sha1.Sum(content)
 	// checksum := sha1.Sum(r.Body)
 	// filename := fmt.Sprintf("%x_%s", checksum[:len(checksum)/2], path.Base(resp.URL))
 
 	// generate and clean the filename based on the url
-	replacer := strings.NewReplacer("/", "_", ":", "", "&", "")
+	replacer := strings.NewReplacer("//","_","/","_",":","","&","",">","","<","")
 	filename := replacer.Replace(r.URL)
 	parts := []string{defaultOutputDir}
 	parts = append(parts, filename)
