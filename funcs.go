@@ -282,7 +282,7 @@ func (r Response) SaveResponse() (string, error) {
 
 	// checksum := sha1.Sum(content)
 	// checksum := sha1.Sum(r.Body)
-	replacer := strings.NewReplacer("/", "_", ":", "")
+	replacer := strings.NewReplacer("/", "_", ":", "", "&", "")
 	filename := replacer.Replace(r.URL)
 	parts := []string{defaultOutputDir}
 	parts = append(parts, filename)
