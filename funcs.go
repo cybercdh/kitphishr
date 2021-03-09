@@ -6,7 +6,7 @@ import (
 	// "crypto/sha1"
 	"crypto/tls"
 	"encoding/json"
-	// "errors"
+	"errors"
 	"fmt"
 	"github.com/PuerkitoBio/goquery"
 	termutil "github.com/andrew-d/go-termutil"
