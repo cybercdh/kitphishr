@@ -282,25 +282,36 @@ func (r Response) SaveResponse() (string, error) {
 
 	// checksum := sha1.Sum(content)
 	// checksum := sha1.Sum(r.Body)
+	// filename := fmt.Sprintf("%x_%s", checksum[:len(checksum)/2], path.Base(resp.URL))
+
+	// generate and clean the filename based on the url
 	replacer := strings.NewReplacer("/", "_", ":", "", "&", "")
 	filename := replacer.Replace(r.URL)
 	parts := []string{defaultOutputDir}
 	parts = append(parts, filename)
 	p := path.Join(parts...)
 
-	// filename := fmt.Sprintf("%x_%s", checksum[:len(checksum)/2], path.Base(resp.URL))
-
-	if _, err := os.Stat(path.Dir(p)); os.IsNotExist(err) {
-		err = os.MkdirAll(path.Dir(p), 0750)
+	// if file exists, return with an error
+	// else write it
+	if fileExists(p) {
+		return "", errors.New("File already exists")
+	} else {
+		err := ioutil.WriteFile(p, content, 0640)
 		if err != nil {
-			return p, err
+			return "", err
 		}
 	}
+	// if _, err := os.Stat(path.Dir(p)); os.IsNotExist(err) {
+	// 	err = os.MkdirAll(path.Dir(p), 0750)
+	// 	if err != nil {
+	// 		return p, err
+	// 	}
+	// }
 
-	err := ioutil.WriteFile(p, content, 0640)
-	if err != nil {
-		return p, err
-	}
+	// err := ioutil.WriteFile(p, content, 0640)
+	// if err != nil {
+	// 	return p, err
+	// }
 
 	// if strings.HasPrefix(filename, "da39a3ee5e6b4b0d3255") {
 	// 	return "", errors.New("0bytefile")
@@ -315,4 +326,12 @@ func (r Response) SaveResponse() (string, error) {
 	// write the body to file
 	// out.Write(resp.Body)
 	return p, nil
+}
+
+func fileExists(filename string) bool {
+  info, err := os.Stat(filename)
+  if os.IsNotExist(err) {
+      return false
+  }
+  return !info.IsDir()
 }
