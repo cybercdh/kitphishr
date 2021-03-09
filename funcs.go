@@ -212,7 +212,7 @@ func MakeClient() *http.Client {
 	var tr = &http.Transport{
 		Proxy:             proxyURL,
 		MaxConnsPerHost:   50,
-		DisableKeepAlives: true,
+		// DisableKeepAlives: true,
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: true,
 			Renegotiation:      tls.RenegotiateOnceAsClient,
