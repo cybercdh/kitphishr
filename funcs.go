@@ -264,10 +264,7 @@ func AttemptTarget(client *http.Client, url string) (Response, error) {
 
 /*
 	saves the resp.body to a file
-	calls it sha1_name.ext
-	note uses first half of sha1 hash to keep filenames
-	relatively short.
-	returns name of file, err
+	uses the url as the basis for the filename
 */
 func (r Response) SaveResponse() (string, error) {
 	/* 
@@ -279,15 +276,7 @@ func (r Response) SaveResponse() (string, error) {
 		have option to overwrite existing files?
 	*/
 	
-	// content := []byte(r.String())
 	content := r.Body
-	// TODO
-	// check if r.Body is > 0?
-	// 
-
-	// checksum := sha1.Sum(content)
-	// checksum := sha1.Sum(r.Body)
-	// filename := fmt.Sprintf("%x_%s", checksum[:len(checksum)/2], path.Base(resp.URL))
 
 	// generate and clean the filename based on the url
 	replacer := strings.NewReplacer("//","_","/","_",":","","&","",">","","<","")
@@ -306,31 +295,7 @@ func (r Response) SaveResponse() (string, error) {
 			return "", err
 		}
 	}
-	// if _, err := os.Stat(path.Dir(p)); os.IsNotExist(err) {
-	// 	err = os.MkdirAll(path.Dir(p), 0750)
-	// 	if err != nil {
-	// 		return p, err
-	// 	}
-	// }
-
-	// err := ioutil.WriteFile(p, content, 0640)
-	// if err != nil {
-	// 	return p, err
-	// }
-
-	// if strings.HasPrefix(filename, "da39a3ee5e6b4b0d3255") {
-	// 	return "", errors.New("0bytefile")
-	// }
-	// create the output file
-	// out, err := os.Create(defaultOutputDir + "/" + filename)
-	// if err != nil {
-	// 	return filename, err
-	// }
-	// defer out.Close()
-
-	// write the body to file
-	// out.Write(resp.Body)
-	return p, nil
+	return filename, nil
 }
 
 func fileExists(filename string) bool {
