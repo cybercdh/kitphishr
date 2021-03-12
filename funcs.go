@@ -191,7 +191,7 @@ func ZipFromDir(resp Response) (string, error) {
 	if strings.Contains(title, "Index of /") {
 		doc.Find("a").Each(func(i int, s *goquery.Selection) {
 			if strings.Contains(s.Text(), ".zip") {
-				ziphref = s.Text()
+				ziphref = s.Text() // TODO - will this only find the first zip in the list? Should append s.Text() to a slice
 			}
 		})
 	}

@@ -9,13 +9,13 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
 	userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.149 Safari/537.36"
 	MAX_DOWNLOAD_SIZE = 104857600 // 100mb
 )
-
 
 var verbose bool
 var downloadKits bool
@@ -149,7 +149,7 @@ func main() {
 						resp, err := AttemptTarget(client, hurl)
 						if err != nil {
 							if verbose {
-								color.Red.Printf("There was an error downloading %s\n", hurl)
+								color.Red.Printf("There was an error downloading %s : %s\n", hurl, err)
 							}
 							continue
 						}
@@ -183,7 +183,8 @@ func main() {
 						color.Yellow.Printf("Successfully saved %s\n", filename)
 					}
 					// update the index file
-					line := fmt.Sprintf("%s : %s\n", resp.URL, filename)
+					t:=time.Now()
+					line := fmt.Sprintf("%s,%s,%s\n",t.Format("20060102150405"), resp.URL, filename)
 					fmt.Fprintf(index, "%s", line)
 				}
 			}
