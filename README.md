@@ -1,4 +1,4 @@
-## DEV VERSION - kitphishr
+## kitphishr
 Hunts for Phishing Kit source code by traversing URL folders and searching in open directories for zip files. 
 
 The code handles large lists of URLs which may be hosting malicious content. You can supply your own list of URLs or alternatively the code will parse the latest list from [PhishTank](https://www.phishtank.com/) so you can easily go hunting for badness.
@@ -44,6 +44,11 @@ or simply
 You need to have [Go installed](https://golang.org/doc/install) and configured (i.e. with $GOPATH/bin in your $PATH):
 
 `go get -u github.com/cybercdh/kitphishr`
+
+or
+
+`go install github.com/cybercdh/kitphishr@latest`
+
 
 ## Configuration
 
