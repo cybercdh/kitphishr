@@ -276,7 +276,7 @@ func (r Response) SaveResponse() (string, error) {
 	content := r.Body
 
 	// generate and clean the filename based on the url
-	replacer := strings.NewReplacer("//","_","/","_",":","","&","",">","","<","")
+	replacer := strings.NewReplacer("//","_","/","_",":","","&","",">","","<",""," ","_")
 	filename := replacer.Replace(r.URL)
 	parts := []string{defaultOutputDir}
 	parts = append(parts, filename)
