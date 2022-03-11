@@ -1,4 +1,4 @@
-module main.go
+module github.com/cybercdh/kitphishr
 
 go 1.15
 
