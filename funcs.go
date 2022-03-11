@@ -158,6 +158,11 @@ func GenerateTargets(urls []PhishUrls) chan string {
 					continue
 				}
 
+				// if we've seen the zipurl already, keep moving
+				if _, ok := seen[zipurl]; ok {
+					continue
+				}
+
 				// add this one to seen too
 				seen[zipurl] = true
 
