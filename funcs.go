@@ -3,7 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"crypto/sha1"
+	// "crypto/sha1"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -121,7 +121,7 @@ func GenerateTargets(urls []PhishUrls) chan string {
 
 	go func() {
 
-		// seen := make(map[string]bool)
+		seen := make(map[string]bool)
 
 		for _, row := range urls {
 			myurl := row.URL
@@ -140,12 +140,12 @@ func GenerateTargets(urls []PhishUrls) chan string {
 				tmp_url := fmt.Sprintf(u.Scheme + "://" + u.Host + strings.Join(_path, "/"))
 
 				// if we've seen the url already, keep moving
-				// if _, ok := seen[tmp_url]; ok {
-					// continue
-				// }
+				if _, ok := seen[tmp_url]; ok {
+					continue
+				}
 
 				// add to seen
-				// seen[tmp_url] = true
+				seen[tmp_url] = true
 
 				// feed the _urls channels
 				_urls <- tmp_url
@@ -159,7 +159,7 @@ func GenerateTargets(urls []PhishUrls) chan string {
 				}
 
 				// add this one to seen too
-				// seen[zipurl] = true
+				seen[zipurl] = true
 
 				// feed the _urls channels
 				_urls <- zipurl
@@ -191,7 +191,7 @@ func ZipFromDir(resp Response) (string, error) {
 	if strings.Contains(title, "Index of /") {
 		doc.Find("a").Each(func(i int, s *goquery.Selection) {
 			if strings.Contains(s.Text(), ".zip") {
-				ziphref = s.Text()
+				ziphref = s.Text() // TODO - will this only find the first zip in the list? Should append s.Text() to a slice
 			}
 		})
 	}
@@ -212,7 +212,7 @@ func MakeClient() *http.Client {
 	var tr = &http.Transport{
 		Proxy:             proxyURL,
 		MaxConnsPerHost:   50,
-		DisableKeepAlives: true,
+		// DisableKeepAlives: true,
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: true,
 			Renegotiation:      tls.RenegotiateOnceAsClient,
@@ -242,7 +242,7 @@ func AttemptTarget(client *http.Client, url string) (Response, error) {
 		return Response{}, err
 	}
 
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.149 Safari/537.36")
+	req.Header.Set("User-Agent", ua)
 	req.Header.Add("Connection", "close")
 	req.Close = true
 
@@ -264,28 +264,44 @@ func AttemptTarget(client *http.Client, url string) (Response, error) {
 
 /*
 	saves the resp.body to a file
-	calls it sha1_name.ext
-	note uses first half of sha1 hash to keep filenames
-	relatively short.
-	returns name of file, err
+	uses the url as the basis for the filename
 */
-func SaveResponse(resp Response) (string, error) {
+func (r Response) SaveResponse() (string, error) {
+	/* 
+		WIP
+		use the hostname as the filename when saving
 
-	checksum := sha1.Sum(resp.Body)
-	filename := fmt.Sprintf("%x_%s", checksum[:len(checksum)/2], path.Base(resp.URL))
+		TODO
+		check if r.Body > 0
+		have option to overwrite existing files?
+	*/
+	
+	content := r.Body
 
-	if strings.HasPrefix(filename, "da39a3ee5e6b4b0d3255") {
-		return "", errors.New("0bytefile")
+	// generate and clean the filename based on the url
+	replacer := strings.NewReplacer("//","_","/","_",":","","&","",">","","<","")
+	filename := replacer.Replace(r.URL)
+	parts := []string{defaultOutputDir}
+	parts = append(parts, filename)
+	p := path.Join(parts...)
+
+	// if file exists, return with an error
+	// else write it
+	if fileExists(p) {
+		return "", errors.New("File already exists")
+	} else {
+		err := ioutil.WriteFile(p, content, 0640)
+		if err != nil {
+			return "", err
+		}
 	}
-	// create the output file
-	out, err := os.Create(defaultOutputDir + "/" + filename)
-	if err != nil {
-		return filename, err
-	}
-	defer out.Close()
-
-	// write the body to file
-	out.Write(resp.Body)
-
 	return filename, nil
+}
+
+func fileExists(filename string) bool {
+  info, err := os.Stat(filename)
+  if os.IsNotExist(err) {
+      return false
+  }
+  return !info.IsDir()
 }

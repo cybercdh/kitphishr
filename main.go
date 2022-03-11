@@ -9,15 +9,20 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
-const MAX_DOWNLOAD_SIZE = 104857600 // 100MB
+const (
+	userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.149 Safari/537.36"
+	MAX_DOWNLOAD_SIZE = 104857600 // 100mb
+)
 
 var verbose bool
 var downloadKits bool
 var concurrency int
 var to int
 var defaultOutputDir string
+var ua string
 var index *os.File
 
 func main() {
@@ -26,6 +31,7 @@ func main() {
 	flag.IntVar(&to, "t", 45, "set the connection timeout in seconds (useful to ensure the download of large files)")
 	flag.BoolVar(&verbose, "v", false, "get more info on URL attempts")
 	flag.BoolVar(&downloadKits, "d", false, "option to download suspected phishing kits")
+	flag.StringVar(&ua, "u", userAgent, "User-Agent for requests")
 	flag.StringVar(&defaultOutputDir, "o", "kits", "directory to save output files")
 
 	flag.Parse()
@@ -143,7 +149,7 @@ func main() {
 						resp, err := AttemptTarget(client, hurl)
 						if err != nil {
 							if verbose {
-								color.Red.Printf("There was an error downloading %s\n", hurl)
+								color.Red.Printf("There was an error downloading %s : %s\n", hurl, err)
 							}
 							continue
 						}
@@ -166,7 +172,7 @@ func main() {
 		go func() {
 			defer sg.Done()
 			for resp := range tosave {
-				filename, err := SaveResponse(resp)
+				filename, err := resp.SaveResponse()
 				if err != nil {
 					if verbose {
 						color.Red.Printf("There was an error saving %s : %s\n", resp.URL, err)
@@ -177,7 +183,8 @@ func main() {
 						color.Yellow.Printf("Successfully saved %s\n", filename)
 					}
 					// update the index file
-					line := fmt.Sprintf("%s : %s\n", resp.URL, filename)
+					t:=time.Now()
+					line := fmt.Sprintf("%s,%s,%s\n",t.Format("20060102150405"), resp.URL, filename)
 					fmt.Fprintf(index, "%s", line)
 				}
 			}
