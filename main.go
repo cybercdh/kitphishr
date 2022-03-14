@@ -134,7 +134,7 @@ func main() {
 				}
 				// iterate the slice of hrefs
 				for _, href := range hrefs {
-				
+
 					if href != "" {
 						hurl := ""
 						if strings.HasSuffix(requrl, "/") {
@@ -158,7 +158,7 @@ func main() {
 							tosave <- resp
 							continue
 						}
-					}	
+					}
 				}
 			}
 		}()

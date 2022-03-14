@@ -47,6 +47,11 @@ func NewResponse(httpresp *http.Response, url string) Response {
 	return resp
 }
 
+/*
+	iterate over a list of functions to pull the latest
+	phishfeed urls from each source. this provides an easy
+	template to add more sources when they're identified
+*/
 func GetPhishURLsFromManyFeeds() ([]PhishUrls, error) {
 
 	fetchFns := []fetchFn{
@@ -80,15 +85,16 @@ func GetPhishURLsFromManyFeeds() ([]PhishUrls, error) {
 		close(phishing_urls)
 	}()
 
-  for w := range phishing_urls {
-    out = append(out, PhishUrls{URL: w.URL})
-  }
+	for w := range phishing_urls {
+		out = append(out, PhishUrls{URL: w.URL})
+	}
 
-  return out, nil
+	return out, nil
 
 }
 
 func getOpenPhishURLs() ([]PhishUrls, error) {
+
 	phishfeed := "https://openphish.com/feed.txt"
 
 	res, err := http.Get(phishfeed)
@@ -134,6 +140,7 @@ func getPhishTankURLs() ([]PhishUrls, error) {
 }
 
 func getNewLinksToday() ([]PhishUrls, error) {
+
 	phishfeed := "https://raw.githubusercontent.com/mitchellkrogza/Phishing.Database/master/phishing-links-NEW-today.txt"
 
 	res, err := http.Get(phishfeed)
@@ -153,6 +160,7 @@ func getNewLinksToday() ([]PhishUrls, error) {
 }
 
 func getPhishStatsInfo() ([]PhishUrls, error) {
+
 	phishfeed := "https://phishstats.info/phish_score.csv"
 	out := make([]PhishUrls, 0)
 
@@ -281,19 +289,23 @@ func ZipFromDir(resp Response) ([]string, error) {
 	data := bytes.NewReader(resp.Body)
 	doc, err := goquery.NewDocumentFromReader(data)
 	if err != nil {
-		return []string{}, err
+		return nil, err
 	}
 
 	title := doc.Find("title").Text()
 
 	if strings.Contains(title, "Index of /") {
+
+		// iterate over each href and look for all zips
 		doc.Find("a").Each(func(i int, s *goquery.Selection) {
 			if strings.Contains(s.Text(), ".zip") {
 				zip_href = append(zip_href, s.Text())
 			}
 		})
+
 	}
 
+	// return slice of zip hrefs
 	return zip_href, nil
 }
 
@@ -382,6 +394,13 @@ func (r Response) SaveResponse() (string, error) {
 	parts := []string{defaultOutputDir}
 	parts = append(parts, filename)
 	p := path.Join(parts...)
+
+	// truncate filename if it's too long
+	// usually MAX is 255 chars
+	if len(p) >= 255 {
+		diff := len(p) - 255
+		p = p[:100] + p[100+diff:]
+	}
 
 	// if file exists, return with an error
 	// else write it
