@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.149 Safari/537.36"
+	userAgent         = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.149 Safari/537.36"
 	MAX_DOWNLOAD_SIZE = 104857600 // 100mb
 )
 
@@ -128,34 +128,37 @@ func main() {
 				}
 
 				// check if we've found an open dir containing a zip
-				// todo - walk an open dir for zips in other folders
-				href, err := ZipFromDir(resp)
+				hrefs, err := ZipFromDir(resp)
 				if err != nil {
 					continue
 				}
-				if href != "" {
-					hurl := ""
-					if strings.HasSuffix(requrl, "/") {
-						hurl = requrl + href
-					} else {
-						hurl = requrl + "/" + href
-					}
-					if verbose {
-						color.Green.Printf("Zip found from Open Directory at %s\n", hurl)
-					} else {
-						fmt.Println(hurl)
-					}
-					if downloadKits {
-						resp, err := AttemptTarget(client, hurl)
-						if err != nil {
-							if verbose {
-								color.Red.Printf("There was an error downloading %s : %s\n", hurl, err)
+				// iterate the slice of hrefs
+				for _, href := range hrefs {
+				
+					if href != "" {
+						hurl := ""
+						if strings.HasSuffix(requrl, "/") {
+							hurl = requrl + href
+						} else {
+							hurl = requrl + "/" + href
+						}
+						if verbose {
+							color.Green.Printf("Zip found from Open Directory at %s\n", hurl)
+						} else {
+							fmt.Println(hurl)
+						}
+						if downloadKits {
+							resp, err := AttemptTarget(client, hurl)
+							if err != nil {
+								if verbose {
+									color.Red.Printf("There was an error downloading %s : %s\n", hurl, err)
+								}
+								continue
 							}
+							tosave <- resp
 							continue
 						}
-						tosave <- resp
-						continue
-					}
+					}	
 				}
 			}
 		}()
@@ -183,8 +186,8 @@ func main() {
 						color.Yellow.Printf("Successfully saved %s\n", filename)
 					}
 					// update the index file
-					t:=time.Now()
-					line := fmt.Sprintf("%s,%s,%s\n",t.Format("20060102150405"), resp.URL, filename)
+					t := time.Now()
+					line := fmt.Sprintf("%s,%s,%s\n", t.Format("20060102150405"), resp.URL, filename)
 					fmt.Fprintf(index, "%s", line)
 				}
 			}

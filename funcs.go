@@ -3,8 +3,8 @@ package main
 import (
 	"bufio"
 	"bytes"
-	// "crypto/sha1"
 	"crypto/tls"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,13 +17,15 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync"
 	"time"
 )
 
-// custom struct for parsing phishtank urls
 type PhishUrls struct {
 	URL string `json:"url"`
 }
+
+type fetchFn func() ([]PhishUrls, error)
 
 type Response struct {
 	StatusCode    int64
@@ -45,22 +47,78 @@ func NewResponse(httpresp *http.Response, url string) Response {
 	return resp
 }
 
-/*
-	read from the PhishTank URL and return just the urls
-*/
-func GetPhishTankURLs() ([]PhishUrls, error) {
+func GetPhishURLsFromManyFeeds() ([]PhishUrls, error) {
 
-	pturl := "http://data.phishtank.com/data/online-valid.json"
-
-	// if the user has their own phishtank api key, use it
-	apiKey := os.Getenv("PT_API_KEY")
-	if apiKey != "" {
-		pturl = fmt.Sprintf("http://data.phishtank.com/data/%s/online-valid.json", apiKey)
+	fetchFns := []fetchFn{
+		getPhishTankURLs,
+		getOpenPhishURLs,
+		getNewLinksToday,
+		getPhishStatsInfo,
 	}
 
-	resp, err := http.Get(pturl)
+	phishing_urls := make(chan PhishUrls)
+	out := make([]PhishUrls, 0)
+
+	var wg sync.WaitGroup
+	for _, fn := range fetchFns {
+		wg.Add(1)
+		fetch := fn
+		go func() {
+			defer wg.Done()
+			resp, err := fetch()
+			if err != nil {
+				return
+			}
+			for _, r := range resp {
+				phishing_urls <- r
+			}
+		}()
+	}
+
+	go func() {
+		wg.Wait()
+		close(phishing_urls)
+	}()
+
+  for w := range phishing_urls {
+    out = append(out, PhishUrls{URL: w.URL})
+  }
+
+  return out, nil
+
+}
+
+func getOpenPhishURLs() ([]PhishUrls, error) {
+	phishfeed := "https://openphish.com/feed.txt"
+
+	res, err := http.Get(phishfeed)
 	if err != nil {
-		return nil, err
+		return []PhishUrls{}, err
+	}
+
+	defer res.Body.Close()
+	sc := bufio.NewScanner(res.Body)
+
+	out := make([]PhishUrls, 0)
+
+	for sc.Scan() {
+		out = append(out, PhishUrls{URL: sc.Text()})
+	}
+	return out, nil
+}
+
+func getPhishTankURLs() ([]PhishUrls, error) {
+
+	phishfeed := "http://data.phishtank.com/data/online-valid.json"
+
+	apiKey := os.Getenv("PT_API_KEY")
+	if apiKey != "" {
+		phishfeed = fmt.Sprintf("http://data.phishtank.com/data/%s/online-valid.json", apiKey)
+	}
+
+	resp, err := http.Get(phishfeed)
+	if err != nil {
+		return []PhishUrls{}, err
 	}
 
 	defer resp.Body.Close()
@@ -70,9 +128,52 @@ func GetPhishTankURLs() ([]PhishUrls, error) {
 	buf.ReadFrom(resp.Body)
 	respByte := buf.Bytes()
 	if err := json.Unmarshal(respByte, &urls); err != nil {
-		return nil, err
+		return []PhishUrls{}, err
 	}
 	return urls, nil
+}
+
+func getNewLinksToday() ([]PhishUrls, error) {
+	phishfeed := "https://raw.githubusercontent.com/mitchellkrogza/Phishing.Database/master/phishing-links-NEW-today.txt"
+
+	res, err := http.Get(phishfeed)
+	if err != nil {
+		return []PhishUrls{}, err
+	}
+
+	defer res.Body.Close()
+	sc := bufio.NewScanner(res.Body)
+
+	out := make([]PhishUrls, 0)
+
+	for sc.Scan() {
+		out = append(out, PhishUrls{URL: sc.Text()})
+	}
+	return out, nil
+}
+
+func getPhishStatsInfo() ([]PhishUrls, error) {
+	phishfeed := "https://phishstats.info/phish_score.csv"
+	out := make([]PhishUrls, 0)
+
+	res, err := http.Get(phishfeed)
+	if err != nil {
+		return []PhishUrls{}, err
+	}
+
+	defer res.Body.Close()
+	reader := csv.NewReader(res.Body)
+	reader.Comma = ','
+	reader.Comment = '#'
+	data, err := reader.ReadAll()
+	if err != nil {
+		return []PhishUrls{}, err
+	}
+
+	for _, row := range data {
+		out = append(out, PhishUrls{URL: row[2]})
+	}
+	return out, nil
 }
 
 /*
@@ -87,11 +188,11 @@ func GetUserInput() ([]PhishUrls, error) {
 	// if nothing on stdin, default getting input from phishtank
 	if termutil.Isatty(os.Stdin.Fd()) {
 
-		pturls, err := GetPhishTankURLs()
+		phishfeeds, err := GetPhishURLsFromManyFeeds()
 		if err != nil {
 			return urls, err
 		}
-		urls = pturls
+		urls = phishfeeds
 
 	} else {
 
@@ -172,15 +273,15 @@ func GenerateTargets(urls []PhishUrls) chan string {
 	parse the response to see if we've hit an open dir
 	if we have, then look for hrefs that are zips
 */
-func ZipFromDir(resp Response) (string, error) {
+func ZipFromDir(resp Response) ([]string, error) {
 
-	ziphref := ""
+	var zip_href []string
 
 	// read body for hrefs
 	data := bytes.NewReader(resp.Body)
 	doc, err := goquery.NewDocumentFromReader(data)
 	if err != nil {
-		return ziphref, err
+		return []string{}, err
 	}
 
 	title := doc.Find("title").Text()
@@ -188,12 +289,12 @@ func ZipFromDir(resp Response) (string, error) {
 	if strings.Contains(title, "Index of /") {
 		doc.Find("a").Each(func(i int, s *goquery.Selection) {
 			if strings.Contains(s.Text(), ".zip") {
-				ziphref = s.Text() // TODO - will this only find the first zip in the list? Should append s.Text() to a slice
+				zip_href = append(zip_href, s.Text())
 			}
 		})
 	}
 
-	return ziphref, nil
+	return zip_href, nil
 }
 
 /*
@@ -207,8 +308,8 @@ func MakeClient() *http.Client {
 	proxyURL := http.ProxyFromEnvironment
 
 	var tr = &http.Transport{
-		Proxy:             proxyURL,
-		MaxConnsPerHost:   50,
+		Proxy:           proxyURL,
+		MaxConnsPerHost: 50,
 		// DisableKeepAlives: true,
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: true,
@@ -264,7 +365,7 @@ func AttemptTarget(client *http.Client, url string) (Response, error) {
 	uses the url as the basis for the filename
 */
 func (r Response) SaveResponse() (string, error) {
-	/* 
+	/*
 		WIP
 		use the hostname as the filename when saving
 
@@ -272,11 +373,11 @@ func (r Response) SaveResponse() (string, error) {
 		check if r.Body > 0
 		have option to overwrite existing files?
 	*/
-	
+
 	content := r.Body
 
 	// generate and clean the filename based on the url
-	replacer := strings.NewReplacer("//","_","/","_",":","","&","",">","","<",""," ","_",")","","(","")
+	replacer := strings.NewReplacer("//", "_", "/", "_", ":", "", "&", "", ">", "", "<", "", " ", "_", ")", "", "(", "")
 	filename := replacer.Replace(r.URL)
 	parts := []string{defaultOutputDir}
 	parts = append(parts, filename)
@@ -296,9 +397,9 @@ func (r Response) SaveResponse() (string, error) {
 }
 
 func fileExists(filename string) bool {
-  info, err := os.Stat(filename)
-  if os.IsNotExist(err) {
-      return false
-  }
-  return !info.IsDir()
+	info, err := os.Stat(filename)
+	if os.IsNotExist(err) {
+		return false
+	}
+	return !info.IsDir()
 }
