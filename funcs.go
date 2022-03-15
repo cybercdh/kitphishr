@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -378,19 +379,29 @@ func AttemptTarget(client *http.Client, url string) (Response, error) {
 */
 func (r Response) SaveResponse() (string, error) {
 	/*
-		WIP
-		use the hostname as the filename when saving
+
+		Save the response content to a file, using the hostname
+		as the basis for a filename, but replacing weird chars
+		and truncating longer filenames.
 
 		TODO
-		check if r.Body > 0
 		have option to overwrite existing files?
 	*/
 
+	// skip if content is empty
 	content := r.Body
+	if len(content) < 1 {
+		return "", errors.New("The file was empty")
+	}
 
-	// generate and clean the filename based on the url
-	replacer := strings.NewReplacer("//", "_", "/", "_", ":", "", "&", "", ">", "", "<", "", " ", "_", ")", "", "(", "")
-	filename := replacer.Replace(r.URL)
+	// generate a clean filename by dropping all non alphanumeric chars
+	// but do allow dots, so we at least get the file ext
+	reg, err := regexp.Compile("[^a-zA-Z0-9.]+")
+	if err != nil {
+		return "", err
+	}
+	filename := reg.ReplaceAllString(r.URL, "")
+
 	parts := []string{defaultOutputDir}
 	parts = append(parts, filename)
 	p := path.Join(parts...)
