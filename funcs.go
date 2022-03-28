@@ -123,7 +123,16 @@ func getPhishTankURLs() ([]PhishUrls, error) {
 		phishfeed = fmt.Sprintf("http://data.phishtank.com/data/%s/online-valid.json", apiKey)
 	}
 
-	resp, err := http.Get(phishfeed)
+	client := &http.Client{}
+
+	req, err := http.NewRequest("GET", phishfeed, nil)
+	if err != nil {
+		return []PhishUrls{}, err
+	}
+
+	req.Header.Set("User-Agent", "kitphishr/1.0")
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return []PhishUrls{}, err
 	}
