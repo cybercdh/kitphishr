@@ -308,8 +308,11 @@ func ZipFromDir(resp Response) ([]string, error) {
 
 		// iterate over each href and look for all zips
 		doc.Find("a").Each(func(i int, s *goquery.Selection) {
-			if strings.Contains(s.Text(), ".zip") {
-				zip_href = append(zip_href, s.Text())
+
+			found_href, ok := s.Attr("href")
+
+			if ok && strings.Contains(found_href, ".zip") {
+				zip_href = append(zip_href, found_href)
 			}
 		})
 
