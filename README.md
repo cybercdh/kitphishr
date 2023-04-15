@@ -52,7 +52,7 @@ or
 
 ## Configuration
 
-Kitphishr will work just fine right out of the box, but if you're going to be running this tool a lot then I suggest getting a [free API key from Phishtank](https://www.phishtank.com/api_register.php)
+Kitphishr will work just fine right out of the box, but if you're going to be running this tool a lot and you have access to a Phishtank account, then I suggest getting a [free API key from Phishtank](https://www.phishtank.com/api_register.php) (registration is currently disabled, so an existing account is required).
 
 Then, you can save this as an environment variable which Kitphishr will find and use:
 
