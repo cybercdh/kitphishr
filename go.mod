@@ -1,6 +1,6 @@
 module github.com/cybercdh/kitphishr
 
-go 1.17
+go 1.24.0
 
 require (
 	github.com/PuerkitoBio/goquery v1.8.0
@@ -11,6 +11,6 @@ require (
 require (
 	github.com/andybalholm/cascadia v1.3.1 // indirect
 	github.com/xo/terminfo v0.0.0-20210125001918-ca9a967f8778 // indirect
-	golang.org/x/net v0.7.0 // indirect
-	golang.org/x/sys v0.5.0 // indirect
+	golang.org/x/net v0.49.0 // indirect
+	golang.org/x/sys v0.40.0 // indirect
 )

@@ -8,8 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/PuerkitoBio/goquery"
-	termutil "github.com/andrew-d/go-termutil"
 	"io/ioutil"
 	"net"
 	"net/http"
@@ -20,6 +18,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/PuerkitoBio/goquery"
+	termutil "github.com/andrew-d/go-termutil"
 )
 
 type PhishUrls struct {
@@ -49,9 +50,9 @@ func NewResponse(httpresp *http.Response, url string) Response {
 }
 
 /*
-	iterate over a list of functions to pull the latest
-	phishfeed urls from each source. this provides an easy
-	template to add more sources when they're identified
+iterate over a list of functions to pull the latest
+phishfeed urls from each source. this provides an easy
+template to add more sources when they're identified
 */
 func GetPhishURLsFromManyFeeds() ([]PhishUrls, error) {
 
@@ -195,9 +196,9 @@ func getPhishStatsInfo() ([]PhishUrls, error) {
 }
 
 /*
-	get a list of urls either from the user
-	piping into this program, or fetch the latest
-	phishing urls from phishtank
+get a list of urls either from the user
+piping into this program, or fetch the latest
+phishing urls from phishtank
 */
 func GetUserInput() ([]PhishUrls, error) {
 
@@ -226,13 +227,14 @@ func GetUserInput() ([]PhishUrls, error) {
 }
 
 /*
-   iterate through the paths of each url to generate
-   a target list...e.g.
-     http://example.com/foo/bar
-     http://example.com/foo/bar.zip
-     http://example.com/foo/
-     http://example.com/foo.zip
-     http://example.com/
+iterate through the paths of each url to generate
+a target list...e.g.
+
+	http://example.com/foo/bar
+	http://example.com/foo/bar.zip
+	http://example.com/foo/
+	http://example.com/foo.zip
+	http://example.com/
 */
 func GenerateTargets(urls []PhishUrls) chan string {
 
@@ -256,7 +258,7 @@ func GenerateTargets(urls []PhishUrls) chan string {
 			// iterate over the paths slice to traverse and send to urls channel
 			for i := 0; i < len(paths); i++ {
 				_path := paths[:len(paths)-i]
-				tmp_url := fmt.Sprintf(u.Scheme + "://" + u.Host + strings.Join(_path, "/"))
+				tmp_url := u.Scheme + "://" + u.Host + strings.Join(_path, "/")
 
 				// if we've seen the url already, keep moving
 				if _, ok := seen[tmp_url]; ok {
@@ -288,8 +290,8 @@ func GenerateTargets(urls []PhishUrls) chan string {
 }
 
 /*
-	parse the response to see if we've hit an open dir
-	if we have, then look for hrefs that are zips
+parse the response to see if we've hit an open dir
+if we have, then look for hrefs that are zips
 */
 func ZipFromDir(resp Response) ([]string, error) {
 
@@ -323,10 +325,10 @@ func ZipFromDir(resp Response) ([]string, error) {
 }
 
 /*
-	make an http client
-	allow redirects
-	skip ssl warnings
-	set some timeouts
+make an http client
+allow redirects
+skip ssl warnings
+set some timeouts
 */
 func MakeClient() *http.Client {
 
@@ -356,8 +358,8 @@ func MakeClient() *http.Client {
 }
 
 /*
-	peform a GET against the target URL
-	return the response
+peform a GET against the target URL
+return the response
 */
 func AttemptTarget(client *http.Client, url string) (Response, error) {
 	req, err := http.NewRequest("GET", url, nil)
@@ -386,8 +388,8 @@ func AttemptTarget(client *http.Client, url string) (Response, error) {
 }
 
 /*
-	saves the resp.body to a file
-	uses the url as the basis for the filename
+saves the resp.body to a file
+uses the url as the basis for the filename
 */
 func (r Response) SaveResponse() (string, error) {
 	/*
