@@ -136,6 +136,51 @@ func TestLoadBrandSignatures_DefaultWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestBrandClassification_Orange(t *testing.T) {
+	const orangeKit = `<?php
+$page = "Espace Client Orange";
+$endpoint = "https://espace-orange.fr/login";
+echo "<title>Mon Compte Orange</title>";
+echo "Connectez-vous a votre espace orange";
+// see orange.fr/portail for terms
+?>`
+	acc := newAnalyzer(defaultBrandSignatures)
+	acc.scan([]byte(orangeKit))
+	result := finalise(AnalyzeResult{}, acc)
+	if len(result.Brands) == 0 || result.Brands[0].Name != "Orange" {
+		t.Errorf("expected primary brand Orange, got %+v", result.Brands)
+	}
+}
+
+func TestBrandClassification_HSBC(t *testing.T) {
+	const hsbcKit = `<?php
+$bank = "HSBC";
+$post_url = "https://hsbc.co.uk/personal-banking/online-banking";
+echo "Welcome to HSBC Online Banking";
+echo "<title>HSBC Personal Banking - Sign in</title>";
+?>`
+	acc := newAnalyzer(defaultBrandSignatures)
+	acc.scan([]byte(hsbcKit))
+	result := finalise(AnalyzeResult{}, acc)
+	if len(result.Brands) == 0 || result.Brands[0].Name != "HSBC" {
+		t.Errorf("expected primary brand HSBC, got %+v", result.Brands)
+	}
+}
+
+func TestBrandClassification_HMRC(t *testing.T) {
+	const hmrcKit = `<?php
+echo "<title>HM Revenue & Customs: Refund Notification</title>";
+$portal = "https://www.gateway.tax.service.gov.uk/login";
+$info = "Visit hmrc.gov.uk for more information.";
+?>`
+	acc := newAnalyzer(defaultBrandSignatures)
+	acc.scan([]byte(hmrcKit))
+	result := finalise(AnalyzeResult{}, acc)
+	if len(result.Brands) == 0 || result.Brands[0].Name != "HMRC" {
+		t.Errorf("expected primary brand HMRC, got %+v", result.Brands)
+	}
+}
+
 func TestLoadBrandSignatures_FromFile(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "brands.json")
