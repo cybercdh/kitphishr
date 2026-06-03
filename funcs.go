@@ -21,6 +21,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
@@ -606,9 +607,16 @@ var ErrHostDead = errors.New("host previously unreachable")
 // deadHostSet tracks hosts that have failed to connect at the network
 // level. Subsequent requests to the same host short-circuit. sync.Map's
 // zero value is ready to use; no constructor needed.
-var deadHostSet sync.Map
+var (
+	deadHostSet   sync.Map
+	deadHostCount atomic.Uint64 // distinct dead hosts seen, for progress reports
+)
 
-func markHostDead(host string)   { deadHostSet.Store(host, struct{}{}) }
+func markHostDead(host string) {
+	if _, loaded := deadHostSet.LoadOrStore(host, struct{}{}); !loaded {
+		deadHostCount.Add(1)
+	}
+}
 func isHostMarkedDead(host string) bool {
 	_, ok := deadHostSet.Load(host)
 	return ok

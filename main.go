@@ -12,7 +12,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/gookit/color"
 )
@@ -33,11 +35,44 @@ var (
 	burst            int
 	wordlistPath     string
 	extensionsFlag   string
+	progressInterval time.Duration
 	idx              *Index
 
 	seenKitURLsMu sync.Mutex
 	seenKitURLs   = make(map[string]struct{})
+
+	attemptedCount atomic.Uint64
+	foundCount     atomic.Uint64
+	savedCount     atomic.Uint64
 )
+
+// runProgress prints a one-line stats summary to stderr every interval
+// until ctx is cancelled or done is closed. Useful for long unattended
+// scans where verbose mode would be noisy. Disabled when interval <= 0.
+func runProgress(ctx context.Context, interval time.Duration, start time.Time, done <-chan struct{}) {
+	if interval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	var lastAttempted uint64
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-done:
+			return
+		case <-ticker.C:
+			attempted := attemptedCount.Load()
+			delta := attempted - lastAttempted
+			rate := float64(delta) / interval.Seconds()
+			lastAttempted = attempted
+			elapsed := time.Since(start).Round(time.Second)
+			fmt.Fprintf(os.Stderr, "[%s] scanned=%d found=%d saved=%d dead-hosts=%d | rate=%.1f/s\n",
+				elapsed, attempted, foundCount.Load(), savedCount.Load(), deadHostCount.Load(), rate)
+		}
+	}
+}
 
 // claimKitURL atomically marks a kit URL as "we are handling this" and
 // returns true if this is the first claim. Used to prevent double-fetching
@@ -86,7 +121,11 @@ func main() {
 	flag.IntVar(&burst, "burst", 20, "per-host burst capacity for the rate limiter")
 	flag.StringVar(&wordlistPath, "wordlist", "", "path to a wordlist of common archive filenames, one per line (built-in default if empty; pass /dev/null to disable wordlist guessing)")
 	flag.StringVar(&extensionsFlag, "extensions", "zip", "comma-separated list of archive extensions to guess (e.g. zip,tar.gz,rar,7z)")
+	flag.DurationVar(&progressInterval, "progress", 30*time.Second, "interval between progress reports to stderr (0 to disable)")
 	flag.Parse()
+
+	scanStart := time.Now()
+	progressDone := make(chan struct{})
 
 	wordlist, err := LoadWordlist(wordlistPath)
 	if err != nil {
@@ -97,6 +136,8 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	go runProgress(ctx, progressInterval, scanStart, progressDone)
 
 	client := MakeClient(to)
 	limiter := newHostRateLimiter(rps, burst)
@@ -134,6 +175,7 @@ func main() {
 					fmt.Printf("Attempting %s\n", target.URL)
 				}
 				res, err := AttemptTarget(ctx, client, limiter, target)
+				attemptedCount.Add(1)
 				if err != nil {
 					if verbose && !errors.Is(err, ErrHostDead) {
 						color.Red.Printf("error fetching %s: %s\n", target.URL, err)
@@ -185,6 +227,7 @@ func main() {
 						}
 						continue
 					}
+					savedCount.Add(1)
 					if verbose {
 						color.Yellow.Printf("Successfully saved %s -> %s\n", resp.URL, savedPath)
 					}
@@ -224,6 +267,11 @@ sendLoop:
 	rg.Wait()
 	close(tosave)
 	sg.Wait()
+
+	close(progressDone)
+	fmt.Fprintf(os.Stderr, "Done. scanned=%d found=%d saved=%d dead-hosts=%d in %s\n",
+		attemptedCount.Load(), foundCount.Load(), savedCount.Load(), deadHostCount.Load(),
+		time.Since(scanStart).Round(time.Second))
 }
 
 // handleResponse classifies a fetch response: either it's a zip we should
@@ -238,6 +286,7 @@ func handleResponse(ctx context.Context, client *http.Client, limiter *hostRateL
 			if !claimKitURL(resp.URL) {
 				return
 			}
+			foundCount.Add(1)
 			if verbose {
 				color.Green.Printf("Zip found from URL folder at %s\n", resp.URL)
 			} else {
@@ -268,6 +317,7 @@ func handleResponse(ctx context.Context, client *http.Client, limiter *hostRateL
 		if !claimKitURL(hurl) {
 			continue
 		}
+		foundCount.Add(1)
 		if verbose {
 			color.Green.Printf("Zip found from Open Directory at %s\n", hurl)
 		} else {
