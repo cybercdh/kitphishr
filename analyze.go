@@ -58,6 +58,9 @@ type AnalyzeResult struct {
 	Size            int64      `json:"size,omitempty"`
 	FilesScanned    int        `json:"files_scanned"`
 	Brands          []BrandHit `json:"brands,omitempty"`
+	Authors         []string   `json:"authors,omitempty"`
+	ICQHandles      []string   `json:"icq_handles,omitempty"`
+	SkypeHandles    []string   `json:"skype_handles,omitempty"`
 	Emails          []string   `json:"emails,omitempty"`
 	TelegramBots    []string   `json:"telegram_bots,omitempty"`
 	TelegramChatIDs []string   `json:"telegram_chat_ids,omitempty"`
@@ -233,6 +236,9 @@ type analyzer struct {
 	tgBots    map[string]struct{}
 	tgChats   map[string]struct{}
 	discords  map[string]struct{}
+	authors   map[string]struct{}
+	icqs      map[string]struct{}
+	skypes    map[string]struct{}
 	brands    []BrandSignature
 	brandHits map[string]int
 }
@@ -243,6 +249,9 @@ func newAnalyzer(brands []BrandSignature) *analyzer {
 		tgBots:    make(map[string]struct{}),
 		tgChats:   make(map[string]struct{}),
 		discords:  make(map[string]struct{}),
+		authors:   make(map[string]struct{}),
+		icqs:      make(map[string]struct{}),
+		skypes:    make(map[string]struct{}),
 		brands:    brands,
 		brandHits: make(map[string]int),
 	}
@@ -266,6 +275,7 @@ func (a *analyzer) scan(content []byte) {
 	for _, m := range discordWebhookPattern.FindAll(content, -1) {
 		a.discords[string(m)] = struct{}{}
 	}
+	scanAuthorsInto(content, a.authors, a.icqs, a.skypes)
 	if len(a.brands) > 0 {
 		scanBrandsInto(bytes.ToLower(content), a.brands, a.brandHits)
 	}
@@ -335,6 +345,9 @@ func hashFile(path string) (string, error) {
 
 func finalise(r AnalyzeResult, a *analyzer) AnalyzeResult {
 	r.Brands = finaliseBrandHits(a.brandHits)
+	r.Authors = sortedKeys(a.authors)
+	r.ICQHandles = sortedKeys(a.icqs)
+	r.SkypeHandles = sortedKeys(a.skypes)
 	r.Emails = sortedKeys(a.emails)
 	r.TelegramBots = sortedKeys(a.tgBots)
 	r.TelegramChatIDs = sortedKeys(a.tgChats)
