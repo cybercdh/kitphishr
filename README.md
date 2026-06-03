@@ -71,3 +71,16 @@ Additionally, I took inspiration from [ffuf](https://github.com/ffuf/ffuf)
 Finally, the initial idea for writing this tool came from great research from [Duo Labs](https://github.com/duo-labs/phish-collect)
 
 Thanks to each of these developers for their awesome open-source tools.
+
+## License
+
+kitphishr is dual-licensed:
+
+- **GPLv2 (with kitphishr-specific clarifications)** for open, non-proprietary use — security research, internal blue-team / SOC use, academic work, and forks under the same terms.
+- **Commercial license** for embedding kitphishr in proprietary products, threat intelligence platforms, SaaS offerings, or appliances.
+
+See [LICENSE](./LICENSE) for the full legal text and [LICENSING.md](./LICENSING.md) for a plain-English explainer with a quick-reference table of common use cases.
+
+For commercial licensing enquiries, contact **cybercdh@gmail.com**.
+
+Contributions are welcome — see [CONTRIBUTING.md](./CONTRIBUTING.md) for the (lightweight) inbound terms.
