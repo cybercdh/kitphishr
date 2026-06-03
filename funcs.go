@@ -258,11 +258,16 @@ URLs with its name so we can record provenance.
 */
 func GetPhishURLsFromManyFeeds() ([]PhishUrls, error) {
 
+	// NOTE on licensing: several of these feeds (PhishTank, OpenPhish free
+	// feed, PhishStats) restrict commercial use of their URL lists.
+	// TweetFeed is MIT-licensed and safe to use commercially. For a
+	// commercial deployment, prefer the commercial-safe subset.
 	fetchFns := []fetchFn{
 		getPhishTankURLs,
 		getOpenPhishURLs,
 		getNewLinksToday,
 		getPhishStatsInfo,
+		getTweetFeedURLs,
 	}
 
 	phishing_urls := make(chan PhishUrls)
@@ -380,6 +385,57 @@ func getPhishStatsInfo() ([]PhishUrls, error) {
 			continue
 		}
 		out = append(out, PhishUrls{URL: row[2], Source: "phishstats"})
+	}
+	return out, nil
+}
+
+// getTweetFeedURLs pulls today's CSV from 0xDanielLopez/TweetFeed, which
+// scrapes infosec tweets for IOCs. The CSV mixes types (url, domain,
+// sha256, ip); we keep only url-typed rows tagged with #phishing.
+//
+// License: MIT — safe for commercial use. Underlying tweets are author
+// content; their links are public.
+func getTweetFeedURLs() ([]PhishUrls, error) {
+	const feed = "https://raw.githubusercontent.com/0xDanielLopez/TweetFeed/master/today.csv"
+	res, err := http.Get(feed)
+	if err != nil {
+		return []PhishUrls{}, err
+	}
+	defer res.Body.Close()
+	return parseTweetFeedCSV(res.Body)
+}
+
+// parseTweetFeedCSV is split out so the filtering logic is unit-testable
+// without hitting the network. Expected format (6 columns):
+//
+//   date, user, type, value, tags, tweet_url
+//
+// We yield only rows where type == "url" and tags contains "phishing".
+func parseTweetFeedCSV(r io.Reader) ([]PhishUrls, error) {
+	reader := csv.NewReader(r)
+	reader.Comma = ','
+	reader.FieldsPerRecord = -1
+	reader.LazyQuotes = true
+	data, err := reader.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+	var out []PhishUrls
+	for _, row := range data {
+		if len(row) < 5 {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(row[2]), "url") {
+			continue
+		}
+		if !strings.Contains(strings.ToLower(row[4]), "phishing") {
+			continue
+		}
+		u := strings.TrimSpace(row[3])
+		if u == "" {
+			continue
+		}
+		out = append(out, PhishUrls{URL: u, Source: "tweetfeed"})
 	}
 	return out, nil
 }
