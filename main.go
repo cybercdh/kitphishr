@@ -1,221 +1,276 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
-	"github.com/gookit/color"
 	"net/http"
+	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
+	"syscall"
+
+	"github.com/gookit/color"
 )
 
 const (
-	userAgent         = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.149 Safari/537.36"
+	defaultUserAgent  = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 	MAX_DOWNLOAD_SIZE = 104857600 // 100mb
 )
 
-var verbose bool
-var downloadKits bool
-var concurrency int
-var to int
-var defaultOutputDir string
-var ua string
-var index *os.File
+var (
+	verbose          bool
+	downloadKits     bool
+	concurrency      int
+	to               int
+	defaultOutputDir string
+	ua               string
+	rps              float64
+	burst            int
+	idx              *Index
+
+	seenKitURLsMu sync.Mutex
+	seenKitURLs   = make(map[string]struct{})
+)
+
+// claimKitURL atomically marks a kit URL as "we are handling this" and
+// returns true if this is the first claim. Used to prevent double-fetching
+// when the same kit URL is discoverable via multiple open-dir paths (e.g.
+// /uploads and /uploads/ both redirecting to the same listing).
+func claimKitURL(u string) bool {
+	seenKitURLsMu.Lock()
+	defer seenKitURLsMu.Unlock()
+	if _, ok := seenKitURLs[u]; ok {
+		return false
+	}
+	seenKitURLs[u] = struct{}{}
+	return true
+}
+
+// resolveHref converts an href found in an open-dir page into an absolute
+// URL relative to the page's URL. Handles relative ("kit.zip"),
+// absolute-path ("/files/kit.zip"), and absolute-URL hrefs.
+func resolveHref(base, href string) (string, bool) {
+	b, err := url.Parse(base)
+	if err != nil {
+		return "", false
+	}
+	h, err := url.Parse(href)
+	if err != nil {
+		return "", false
+	}
+	return b.ResolveReference(h).String(), true
+}
 
 func main() {
-
 	flag.IntVar(&concurrency, "c", 50, "set the concurrency level")
 	flag.IntVar(&to, "t", 45, "set the connection timeout in seconds (useful to ensure the download of large files)")
 	flag.BoolVar(&verbose, "v", false, "get more info on URL attempts")
 	flag.BoolVar(&downloadKits, "d", false, "option to download suspected phishing kits")
-	flag.StringVar(&ua, "u", userAgent, "User-Agent for requests")
+	flag.StringVar(&ua, "u", defaultUserAgent, "User-Agent for requests")
 	flag.StringVar(&defaultOutputDir, "o", "kits", "directory to save output files")
-
+	flag.Float64Var(&rps, "rps", 2.0, "per-host request rate limit (requests per second)")
+	flag.IntVar(&burst, "burst", 4, "per-host burst capacity for the rate limiter")
 	flag.Parse()
 
-	client := MakeClient()
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
 
-	targets := make(chan string)
-	responses := make(chan Response)
-	tosave := make(chan Response)
+	client := MakeClient(to)
+	limiter := newHostRateLimiter(rps, burst)
 
-	// create the output directory, ready to save files to
 	if downloadKits {
-		err := os.MkdirAll(defaultOutputDir, os.ModePerm)
-		if err != nil {
-			fmt.Printf("There was an error creating the output directory : %s\n", err)
+		if err := os.MkdirAll(defaultOutputDir, os.ModePerm); err != nil {
+			fmt.Fprintf(os.Stderr, "There was an error creating the output directory: %s\n", err)
 			os.Exit(1)
 		}
-		// open the index file
-		indexFile := filepath.Join(defaultOutputDir, "/index")
-		index, err = os.OpenFile(indexFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		indexPath := filepath.Join(defaultOutputDir, "index.jsonl")
+		var err error
+		idx, err = NewIndex(indexPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "failed to open index file for writing: %s\n", err)
 			os.Exit(1)
 		}
+		defer idx.Close()
 	}
 
-	// worker group to fetch the urls from targets channel
-	// send the output to responses channel for further processing
+	targets := make(chan PhishUrls, concurrency)
+	responses := make(chan Response, concurrency)
+	tosave := make(chan Response, concurrency)
+
+	// fetch workers
 	var wg sync.WaitGroup
-
 	for i := 0; i < concurrency; i++ {
-
 		wg.Add(1)
-
 		go func() {
-
 			defer wg.Done()
-
-			for url := range targets {
+			for target := range targets {
+				if ctx.Err() != nil {
+					return
+				}
 				if verbose {
-					fmt.Printf("Attempting %s\n", url)
+					fmt.Printf("Attempting %s\n", target.URL)
 				}
-				res, err := AttemptTarget(client, url)
+				res, err := AttemptTarget(ctx, client, limiter, target)
 				if err != nil {
+					if verbose {
+						color.Red.Printf("error fetching %s: %s\n", target.URL, err)
+					}
 					continue
 				}
-
-				responses <- res
+				select {
+				case <-ctx.Done():
+					return
+				case responses <- res:
+				}
 			}
-
 		}()
-
 	}
 
-	// response group
-	// determines if we've found a zip from a url folder
-	// or if we've found an open directory and looks for a zip within
+	// response analyzer workers
 	var rg sync.WaitGroup
-
 	for i := 0; i < concurrency/2; i++ {
-
 		rg.Add(1)
-
 		go func() {
-
 			defer rg.Done()
-
 			for resp := range responses {
-
-				if resp.StatusCode != http.StatusOK {
-					continue
+				if ctx.Err() != nil {
+					return
 				}
-
-				requrl := resp.URL
-
-				// if we found a zip from a URL path
-				if strings.HasSuffix(requrl, ".zip") {
-
-					// make sure it's a valid zip
-					if resp.ContentLength > 0 && resp.ContentLength < MAX_DOWNLOAD_SIZE && strings.Contains(resp.ContentType, "zip") {
-
-						if verbose {
-							color.Green.Printf("Zip found from URL folder at %s\n", requrl)
-						} else {
-							fmt.Println(requrl)
-						}
-
-						// download the zip
-						if downloadKits {
-							tosave <- resp
-							continue
-						}
-					}
-				}
-
-				// check if we've found an open dir containing a zip
-				hrefs, err := ZipFromDir(resp)
-				if err != nil {
-					continue
-				}
-				// iterate the slice of hrefs
-				for _, href := range hrefs {
-
-					if href != "" {
-						hurl := ""
-						if strings.HasSuffix(requrl, "/") {
-							hurl = requrl + href
-						} else {
-							hurl = requrl + "/" + href
-						}
-						if verbose {
-							color.Green.Printf("Zip found from Open Directory at %s\n", hurl)
-						} else {
-							fmt.Println(hurl)
-						}
-						if downloadKits {
-							resp, err := AttemptTarget(client, hurl)
-							if err != nil {
-								if verbose {
-									color.Red.Printf("There was an error downloading %s : %s\n", hurl, err)
-								}
-								continue
-							}
-							tosave <- resp
-							continue
-						}
-					}
-				}
+				handleResponse(ctx, client, limiter, resp, tosave)
 			}
 		}()
 	}
 
-	// save group
+	// save workers
 	var sg sync.WaitGroup
-
-	// give this a few threads to play with
-	for i := 0; i < 10; i++ {
-
+	if downloadKits {
+		for i := 0; i < 10; i++ {
+			sg.Add(1)
+			go func() {
+				defer sg.Done()
+				for resp := range tosave {
+					savedPath, dedup, err := resp.SaveResponse(idx, defaultOutputDir)
+					if err != nil {
+						if verbose {
+							color.Red.Printf("error saving %s: %s\n", resp.URL, err)
+						}
+						continue
+					}
+					if dedup {
+						if verbose {
+							color.Yellow.Printf("duplicate of existing kit (%s) -> %s\n", resp.URL, savedPath)
+						}
+						continue
+					}
+					if verbose {
+						color.Yellow.Printf("Successfully saved %s -> %s\n", resp.URL, savedPath)
+					}
+				}
+			}()
+		}
+	} else {
+		// no-op consumer so the analyzer doesn't block when -d is off
 		sg.Add(1)
-
 		go func() {
 			defer sg.Done()
-			for resp := range tosave {
-				filename, err := resp.SaveResponse()
-				if err != nil {
-					if verbose {
-						color.Red.Printf("There was an error saving %s : %s\n", resp.URL, err)
-					}
-					continue
-				} else if filename != "" {
-					if verbose {
-						color.Yellow.Printf("Successfully saved %s\n", filename)
-					}
-					// update the index file
-					t := time.Now()
-					line := fmt.Sprintf("%s,%s,%s\n", t.Format("20060102150405"), resp.URL, filename)
-					fmt.Fprintf(index, "%s", line)
-				}
+			for range tosave {
 			}
 		}()
 	}
 
-	// get input either from user or phishtank
 	input, err := GetUserInput()
 	if err != nil {
-		fmt.Printf("There was an error getting URLS from PhishTank.\n")
+		fmt.Fprintf(os.Stderr, "There was an error getting URLs from feeds.\n")
 		os.Exit(3)
 	}
 
-	// generate targets based on user input
-	urls := GenerateTargets(input)
+	urls := GenerateTargets(ctx, input)
 
-	// send target urls to target channel
-	for url := range urls {
-		targets <- url
+sendLoop:
+	for u := range urls {
+		select {
+		case <-ctx.Done():
+			break sendLoop
+		case targets <- u:
+		}
 	}
 
 	close(targets)
 	wg.Wait()
-
 	close(responses)
 	rg.Wait()
-
 	close(tosave)
 	sg.Wait()
+}
 
+// handleResponse classifies a fetch response: either it's a zip we should
+// save, or it's an open-directory page we should walk for zip links.
+func handleResponse(ctx context.Context, client *http.Client, limiter *hostRateLimiter, resp Response, tosave chan<- Response) {
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+
+	if strings.HasSuffix(resp.URL, ".zip") {
+		if len(resp.Body) > 0 && resp.ContentLength > 0 && resp.ContentLength < MAX_DOWNLOAD_SIZE && (strings.Contains(strings.ToLower(resp.ContentType), "zip") || strings.Contains(strings.ToLower(resp.ContentType), "octet-stream")) {
+			if !claimKitURL(resp.URL) {
+				return
+			}
+			if verbose {
+				color.Green.Printf("Zip found from URL folder at %s\n", resp.URL)
+			} else {
+				fmt.Println(resp.URL)
+			}
+			if downloadKits {
+				select {
+				case <-ctx.Done():
+				case tosave <- resp:
+				}
+			}
+			return
+		}
+	}
+
+	hrefs, err := ZipFromDir(resp)
+	if err != nil {
+		return
+	}
+	for _, href := range hrefs {
+		if href == "" {
+			continue
+		}
+		hurl, ok := resolveHref(resp.URL, href)
+		if !ok {
+			continue
+		}
+		if !claimKitURL(hurl) {
+			continue
+		}
+		if verbose {
+			color.Green.Printf("Zip found from Open Directory at %s\n", hurl)
+		} else {
+			fmt.Println(hurl)
+		}
+		if !downloadKits {
+			continue
+		}
+		fetched, err := AttemptTarget(ctx, client, limiter, PhishUrls{URL: hurl, Source: resp.Source})
+		if err != nil {
+			if verbose {
+				color.Red.Printf("error downloading %s: %s\n", hurl, err)
+			}
+			continue
+		}
+		if len(fetched.Body) == 0 {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case tosave <- fetched:
+		}
+	}
 }

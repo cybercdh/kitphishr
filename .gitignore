@@ -7,3 +7,9 @@
 # Ignore files related to API keys
 .env
 
+# Built binary
+/kitphishr
+
+# Default output directory
+/kits/
+

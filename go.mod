@@ -1,11 +1,12 @@
 module github.com/cybercdh/kitphishr
 
-go 1.24.0
+go 1.25.0
 
 require (
 	github.com/PuerkitoBio/goquery v1.8.0
 	github.com/andrew-d/go-termutil v0.0.0-20150726205930-009166a695a2
 	github.com/gookit/color v1.5.0
+	golang.org/x/time v0.15.0
 )
 
 require (
