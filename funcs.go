@@ -33,6 +33,80 @@ type PhishUrls struct {
 	Source string `json:"source,omitempty"`
 }
 
+// kitArchiveNames is the built-in wordlist of common phishing-kit archive
+// names. Used for "${dir}/${name}.${ext}" guess generation when the user
+// hasn't supplied their own via -wordlist. Kept short and brand-neutral;
+// supply a longer file with -wordlist for targeted hunting.
+var kitArchiveNames = []string{
+	"kit", "panel", "admin", "mailer", "files", "backup", "upload",
+	"update", "script", "config", "data", "login", "new", "html",
+	"www", "phish", "scam", "mail",
+}
+
+// archiveRecognitionExts is the list of archive extensions kitphishr will
+// *recognise* in HTTP responses (open-dir hrefs and HEAD probes). This is
+// independent of the user's -extensions guess list: we want to spot a .rar
+// in an open dir even if the user only asked us to guess .zip.
+var archiveRecognitionExts = []string{
+	".zip", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz",
+	".rar", ".7z", ".gz", ".bz2",
+}
+
+// hasArchiveExtension reports whether s ends in any extension we treat as
+// an archive (after stripping a trailing query string).
+func hasArchiveExtension(s string) bool {
+	s = strings.ToLower(s)
+	if i := strings.Index(s, "?"); i >= 0 {
+		s = s[:i]
+	}
+	for _, ext := range archiveRecognitionExts {
+		if strings.HasSuffix(s, ext) {
+			return true
+		}
+	}
+	return false
+}
+
+// LoadWordlist reads a wordlist file (one entry per line, '#' for comments,
+// blank lines ignored). An empty path returns the built-in default.
+func LoadWordlist(path string) ([]string, error) {
+	if path == "" {
+		return kitArchiveNames, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var words []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		words = append(words, line)
+	}
+	return words, nil
+}
+
+// ParseExtensions splits a comma-separated extension list, strips any
+// leading dots, and discards empties. Defaults to {"zip"} if everything
+// was empty/garbage.
+func ParseExtensions(s string) []string {
+	var out []string
+	for _, e := range strings.Split(s, ",") {
+		e = strings.TrimSpace(e)
+		e = strings.TrimPrefix(e, ".")
+		if e == "" {
+			continue
+		}
+		out = append(out, e)
+	}
+	if len(out) == 0 {
+		out = []string{"zip"}
+	}
+	return out
+}
+
 type fetchFn func() ([]PhishUrls, error)
 
 type Response struct {
@@ -316,18 +390,19 @@ func GetUserInput() ([]PhishUrls, error) {
 iterate through the paths of each url to generate a target list,
 preserving the source feed annotation on every variant. for each path
 prefix we emit the bare URL, a trailing-slash variant (servers often
-respond differently to /foo vs /foo/), and a .zip-guess variant. e.g.
+respond differently to /foo vs /foo/), a ${path}.${ext} guess for each
+configured extension, and a ${path-as-dir}/${word}.${ext} wordlist
+guess for each (word, ext) pair. e.g. for /foo/bar with wordlist
+{kit,panel} and extensions {zip}:
 
 	http://example.com/foo/bar
 	http://example.com/foo/bar/
 	http://example.com/foo/bar.zip
-	http://example.com/foo
-	http://example.com/foo/
-	http://example.com/foo.zip
-	http://example.com
-	http://example.com/
+	http://example.com/foo/bar/kit.zip
+	http://example.com/foo/bar/panel.zip
+	... (and similarly for /foo and /)
 */
-func GenerateTargets(ctx context.Context, urls []PhishUrls) chan PhishUrls {
+func GenerateTargets(ctx context.Context, urls []PhishUrls, wordlist []string, extensions []string) chan PhishUrls {
 	out := make(chan PhishUrls, 1)
 	go func() {
 		defer close(out)
@@ -360,13 +435,32 @@ func GenerateTargets(ctx context.Context, urls []PhishUrls) chan PhishUrls {
 					}
 				}
 
-				// .zip guess (skip nonsensical /.zip and bare-host.zip)
-				zipurl := tmp_url + ".zip"
-				if strings.HasSuffix(zipurl, "/.zip") || strings.Count(zipurl, "/") < 3 {
+				// ${path}.${ext} extension guesses (skip nonsensical /.ext
+				// and bare-host.ext)
+				for _, ext := range extensions {
+					guess := tmp_url + "." + ext
+					if strings.HasSuffix(guess, "/."+ext) || strings.Count(guess, "/") < 3 {
+						continue
+					}
+					if !emit(guess, row.Source) {
+						return
+					}
+				}
+
+				// ${path-as-dir}/${word}.${ext} wordlist guesses
+				dirBase := tmp_url
+				if !strings.HasSuffix(dirBase, "/") {
+					dirBase += "/"
+				}
+				if strings.Count(dirBase, "/") < 3 {
 					continue
 				}
-				if !emit(zipurl, row.Source) {
-					return
+				for _, word := range wordlist {
+					for _, ext := range extensions {
+						if !emit(dirBase+word+"."+ext, row.Source) {
+							return
+						}
+					}
 				}
 			}
 		}
@@ -404,8 +498,7 @@ func ZipFromDir(resp Response) ([]string, error) {
 		if !ok {
 			return
 		}
-		lower := strings.ToLower(found_href)
-		if strings.HasSuffix(lower, ".zip") || strings.Contains(lower, ".zip?") {
+		if hasArchiveExtension(found_href) {
 			zip_href = append(zip_href, found_href)
 		}
 	})
@@ -519,6 +612,15 @@ func hostOf(rawURL string) string {
 	return u.Host
 }
 
+// archiveContentTypeSignals is a list of substrings that, when present in a
+// Content-Type header, indicate the body is (likely) an archive. We match
+// liberally rather than exactly because mime registrations vary widely
+// across servers (application/zip, application/x-zip-compressed,
+// application/x-7z-compressed, application/vnd.rar, application/x-tar, etc).
+var archiveContentTypeSignals = []string{
+	"zip", "octet-stream", "tar", "gzip", "bzip", "rar", "7z",
+}
+
 func probeLooksArchiveShaped(r Response) bool {
 	if r.StatusCode != http.StatusOK {
 		return false
@@ -527,15 +629,10 @@ func probeLooksArchiveShaped(r Response) bool {
 		return false
 	}
 	ct := strings.ToLower(r.ContentType)
-	if strings.Contains(ct, "zip") {
-		return true
-	}
-	// many servers serve archives as octet-stream
-	if strings.Contains(ct, "application/octet-stream") {
-		return true
-	}
-	if strings.Contains(ct, "application/x-zip") {
-		return true
+	for _, sig := range archiveContentTypeSignals {
+		if strings.Contains(ct, sig) {
+			return true
+		}
 	}
 	return false
 }
@@ -685,18 +782,25 @@ func finalURL(resp *http.Response, requested string) string {
 var filenameSanitizer = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
 
 // extensionFromURL pulls a safe-ish extension off the URL path for naming.
-// Defaults to ".zip" when nothing else is detectable, since this code path
-// only fires for things we believe to be archives.
+// Recognises compound extensions like .tar.gz so saved filenames are
+// useful. Defaults to ".zip" when nothing else is detectable, since this
+// code path only fires for things we believe to be archives.
 func extensionFromURL(rawURL string) string {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return ".zip"
 	}
+	p := strings.ToLower(u.Path)
+	// compound extensions first, so foo.tar.gz -> .tar.gz not .gz
+	for _, ext := range []string{".tar.gz", ".tar.bz2", ".tar.xz"} {
+		if strings.HasSuffix(p, ext) {
+			return ext
+		}
+	}
 	ext := strings.ToLower(filepath.Ext(u.Path))
 	if ext == "" || len(ext) > 8 {
 		return ".zip"
 	}
-	// strip any junk past the dot
 	clean := filenameSanitizer.ReplaceAllString(ext, "")
 	if clean == "" {
 		return ".zip"

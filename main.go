@@ -30,6 +30,8 @@ var (
 	ua               string
 	rps              float64
 	burst            int
+	wordlistPath     string
+	extensionsFlag   string
 	idx              *Index
 
 	seenKitURLsMu sync.Mutex
@@ -74,7 +76,16 @@ func main() {
 	flag.StringVar(&defaultOutputDir, "o", "kits", "directory to save output files")
 	flag.Float64Var(&rps, "rps", 2.0, "per-host request rate limit (requests per second)")
 	flag.IntVar(&burst, "burst", 4, "per-host burst capacity for the rate limiter")
+	flag.StringVar(&wordlistPath, "wordlist", "", "path to a wordlist of common archive filenames, one per line (built-in default if empty; pass /dev/null to disable wordlist guessing)")
+	flag.StringVar(&extensionsFlag, "extensions", "zip", "comma-separated list of archive extensions to guess (e.g. zip,tar.gz,rar,7z)")
 	flag.Parse()
+
+	wordlist, err := LoadWordlist(wordlistPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to load wordlist %q: %s\n", wordlistPath, err)
+		os.Exit(1)
+	}
+	extensions := ParseExtensions(extensionsFlag)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -188,7 +199,7 @@ func main() {
 		os.Exit(3)
 	}
 
-	urls := GenerateTargets(ctx, input)
+	urls := GenerateTargets(ctx, input, wordlist, extensions)
 
 sendLoop:
 	for u := range urls {

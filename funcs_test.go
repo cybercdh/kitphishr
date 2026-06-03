@@ -17,7 +17,7 @@ import (
 func TestGenerateTargets_PathTraversalAndZipGuess(t *testing.T) {
 	ctx := context.Background()
 	in := []PhishUrls{{URL: "http://example.com/foo/bar/login.php", Source: "stdin"}}
-	ch := GenerateTargets(ctx, in)
+	ch := GenerateTargets(ctx, in, nil, []string{"zip"})
 
 	var got []string
 	for u := range ch {
@@ -50,7 +50,7 @@ func TestGenerateTargets_PathTraversalAndZipGuess(t *testing.T) {
 func TestGenerateTargets_SkipsRootZip(t *testing.T) {
 	ctx := context.Background()
 	in := []PhishUrls{{URL: "http://example.com/", Source: "x"}}
-	ch := GenerateTargets(ctx, in)
+	ch := GenerateTargets(ctx, in, nil, []string{"zip"})
 
 	for u := range ch {
 		if strings.HasSuffix(u.URL, "/.zip") {
@@ -65,10 +65,71 @@ func TestGenerateTargets_SkipsRootZip(t *testing.T) {
 func TestGenerateTargets_RespectsContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	in := []PhishUrls{{URL: "http://example.com/a/b/c", Source: "x"}}
-	ch := GenerateTargets(ctx, in)
+	ch := GenerateTargets(ctx, in, nil, []string{"zip"})
 	cancel()
 	// drain — should close on its own without hanging
 	for range ch {
+	}
+}
+
+func TestGenerateTargets_Wordlist(t *testing.T) {
+	ctx := context.Background()
+	in := []PhishUrls{{URL: "http://example.com/foo/", Source: "stdin"}}
+	ch := GenerateTargets(ctx, in, []string{"kit", "panel"}, []string{"zip"})
+
+	got := map[string]bool{}
+	for u := range ch {
+		got[u.URL] = true
+	}
+
+	wantPresent := []string{
+		"http://example.com/foo/kit.zip",
+		"http://example.com/foo/panel.zip",
+		"http://example.com/kit.zip",
+		"http://example.com/panel.zip",
+	}
+	for _, w := range wantPresent {
+		if !got[w] {
+			t.Errorf("expected wordlist URL %q in output", w)
+		}
+	}
+}
+
+func TestGenerateTargets_MultipleExtensions(t *testing.T) {
+	ctx := context.Background()
+	in := []PhishUrls{{URL: "http://example.com/foo/", Source: "stdin"}}
+	ch := GenerateTargets(ctx, in, []string{"kit"}, []string{"zip", "tar.gz", "rar"})
+
+	got := map[string]bool{}
+	for u := range ch {
+		got[u.URL] = true
+	}
+
+	for _, ext := range []string{"zip", "tar.gz", "rar"} {
+		want := "http://example.com/foo/kit." + ext
+		if !got[want] {
+			t.Errorf("expected wordlist URL %q in output", want)
+		}
+		// also the ${path}.${ext} guess
+		want2 := "http://example.com/foo." + ext
+		if !got[want2] {
+			t.Errorf("expected extension guess %q in output", want2)
+		}
+	}
+}
+
+func TestGenerateTargets_EmptyWordlistOnlyDoesPathGuesses(t *testing.T) {
+	ctx := context.Background()
+	in := []PhishUrls{{URL: "http://example.com/foo/", Source: "stdin"}}
+	ch := GenerateTargets(ctx, in, nil, []string{"zip"})
+
+	for u := range ch {
+		// wordlist-style URLs should not appear when wordlist is empty
+		for _, w := range kitArchiveNames {
+			if strings.HasSuffix(u.URL, "/"+w+".zip") {
+				t.Errorf("empty wordlist should not produce wordlist URL: %s", u.URL)
+			}
+		}
 	}
 }
 
@@ -140,6 +201,11 @@ func TestProbeLooksArchiveShaped(t *testing.T) {
 		{"ok zip", Response{StatusCode: 200, ContentLength: 1000, ContentType: "application/zip"}, true},
 		{"ok octet-stream", Response{StatusCode: 200, ContentLength: 1000, ContentType: "application/octet-stream"}, true},
 		{"ok x-zip", Response{StatusCode: 200, ContentLength: 1000, ContentType: "application/x-zip-compressed"}, true},
+		{"ok x-tar", Response{StatusCode: 200, ContentLength: 1000, ContentType: "application/x-tar"}, true},
+		{"ok gzip", Response{StatusCode: 200, ContentLength: 1000, ContentType: "application/gzip"}, true},
+		{"ok x-rar", Response{StatusCode: 200, ContentLength: 1000, ContentType: "application/x-rar-compressed"}, true},
+		{"ok x-7z", Response{StatusCode: 200, ContentLength: 1000, ContentType: "application/x-7z-compressed"}, true},
+		{"ok x-bzip2", Response{StatusCode: 200, ContentLength: 1000, ContentType: "application/x-bzip2"}, true},
 		{"not 200", Response{StatusCode: 404, ContentLength: 1000, ContentType: "application/zip"}, false},
 		{"zero length", Response{StatusCode: 200, ContentLength: 0, ContentType: "application/zip"}, false},
 		{"too big", Response{StatusCode: 200, ContentLength: MAX_DOWNLOAD_SIZE + 1, ContentType: "application/zip"}, false},
@@ -154,13 +220,112 @@ func TestProbeLooksArchiveShaped(t *testing.T) {
 	}
 }
 
+func TestHasArchiveExtension(t *testing.T) {
+	cases := map[string]bool{
+		"kit.zip":            true,
+		"kit.ZIP":            true,
+		"kit.tar.gz":         true,
+		"kit.tgz":            true,
+		"kit.tar.bz2":        true,
+		"kit.rar":            true,
+		"kit.7z":             true,
+		"kit.zip?v=1":        true,
+		"login.php":          false,
+		"readme.txt":         false,
+		"foo":                false,
+		"kit.zipper":         false,
+	}
+	for in, want := range cases {
+		if got := hasArchiveExtension(in); got != want {
+			t.Errorf("hasArchiveExtension(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestZipFromDir_FindsMultipleArchiveExtensions(t *testing.T) {
+	body := `<html><head><title>Index of /uploads</title></head><body>
+		<a href="../">../</a>
+		<a href="kit.zip">kit.zip</a>
+		<a href="panel.tar.gz">panel.tar.gz</a>
+		<a href="dump.rar">dump.rar</a>
+		<a href="files.7z">files.7z</a>
+		<a href="readme.txt">readme.txt</a>
+	</body></html>`
+	resp := Response{Body: []byte(body), ContentType: "text/html"}
+	hrefs, err := ZipFromDir(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hrefs) != 4 {
+		t.Errorf("expected 4 archive hrefs, got %d: %v", len(hrefs), hrefs)
+	}
+}
+
+func TestParseExtensions(t *testing.T) {
+	cases := map[string][]string{
+		"zip":             {"zip"},
+		"zip,tar.gz,rar":  {"zip", "tar.gz", "rar"},
+		".zip,.tar.gz":    {"zip", "tar.gz"},
+		"  zip , tar.gz ": {"zip", "tar.gz"},
+		"":                {"zip"},
+		",,,":             {"zip"},
+	}
+	for in, want := range cases {
+		got := ParseExtensions(in)
+		if !equalStringSlices(got, want) {
+			t.Errorf("ParseExtensions(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestLoadWordlist_DefaultWhenEmpty(t *testing.T) {
+	w, err := LoadWordlist("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(w) == 0 {
+		t.Error("expected non-empty default wordlist")
+	}
+	// sanity-check it includes one of the obvious entries
+	found := false
+	for _, x := range w {
+		if x == "kit" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected default wordlist to include 'kit'")
+	}
+}
+
+func TestLoadWordlist_FromFile(t *testing.T) {
+	dir := t.TempDir()
+	wlPath := filepath.Join(dir, "wordlist.txt")
+	content := "# comment line\nkit\n\npanel\n   \nadmin\n"
+	if err := os.WriteFile(wlPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	w, err := LoadWordlist(wlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"kit", "panel", "admin"}
+	if !equalStringSlices(w, want) {
+		t.Errorf("got %v, want %v", w, want)
+	}
+}
+
 func TestExtensionFromURL(t *testing.T) {
 	cases := map[string]string{
-		"http://x.com/foo.zip":     ".zip",
-		"http://x.com/foo.tar.gz":  ".gz",
-		"http://x.com/foo":         ".zip",
+		"http://x.com/foo.zip":          ".zip",
+		"http://x.com/foo.tar.gz":       ".tar.gz",
+		"http://x.com/foo.tar.bz2":      ".tar.bz2",
+		"http://x.com/foo.rar":          ".rar",
+		"http://x.com/foo.7z":           ".7z",
+		"http://x.com/foo":              ".zip",
 		"http://x.com/foo.weirdextlong": ".zip",
-		"http://x.com/path/":       ".zip",
+		"http://x.com/path/":            ".zip",
 	}
 	for in, want := range cases {
 		if got := extensionFromURL(in); got != want {
