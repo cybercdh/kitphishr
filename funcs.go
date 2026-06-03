@@ -562,12 +562,53 @@ func MakeClient(timeoutSecs int) *http.Client {
 	}
 }
 
+// ErrHostDead is returned when a target's host has already been observed
+// as unreachable (NXDOMAIN, refused, dial timeout). Callers can suppress
+// log noise by checking errors.Is(err, ErrHostDead) — only the first
+// failure per host produces a "real" error worth printing.
+var ErrHostDead = errors.New("host previously unreachable")
+
+// deadHostSet tracks hosts that have failed to connect at the network
+// level. Subsequent requests to the same host short-circuit. sync.Map's
+// zero value is ready to use; no constructor needed.
+var deadHostSet sync.Map
+
+func markHostDead(host string)   { deadHostSet.Store(host, struct{}{}) }
+func isHostMarkedDead(host string) bool {
+	_, ok := deadHostSet.Load(host)
+	return ok
+}
+
+// isUnreachableErr reports whether err means "we couldn't reach the host
+// at all" — DNS failures, dial timeouts, connection refused. These are
+// effectively permanent for the duration of a scan and shouldn't be
+// retried per-URL.
+func isUnreachableErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return true
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Op == "dial" {
+		return true
+	}
+	return false
+}
+
 // AttemptTarget performs a request against url. For URLs ending in .zip it
 // HEADs first to avoid downloading large non-zip bodies; if the probe looks
 // archive-shaped it then GETs. Per-host rate limiting and retry-with-backoff
-// are applied to every network call.
+// are applied to every network call. If the host has previously been seen
+// as unreachable in this run, the call short-circuits with ErrHostDead.
 func AttemptTarget(ctx context.Context, client *http.Client, limiter *hostRateLimiter, target PhishUrls) (Response, error) {
 	host := hostOf(target.URL)
+
+	if isHostMarkedDead(host) {
+		return Response{}, fmt.Errorf("%w: %s", ErrHostDead, host)
+	}
 
 	if strings.HasSuffix(target.URL, ".zip") {
 		if err := limiter.Wait(ctx, host); err != nil {
@@ -643,7 +684,12 @@ func retryable(statusCode int, err error) bool {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return false
 		}
-		// network-level errors (dial timeouts, EOF, connection reset, etc.)
+		// Permanent network-level failures (NXDOMAIN, connection refused,
+		// dial timeout) won't be cured by retrying.
+		if isUnreachableErr(err) {
+			return false
+		}
+		// transient network errors (read EOF, connection reset mid-body)
 		return true
 	}
 	if statusCode == 502 || statusCode == 503 || statusCode == 504 {
@@ -715,6 +761,9 @@ func probeOnce(ctx context.Context, client *http.Client, rawURL string) (Respons
 
 	httpresp, err := client.Do(req)
 	if err != nil {
+		if isUnreachableErr(err) {
+			markHostDead(hostOf(rawURL))
+		}
 		return Response{}, err
 	}
 	defer httpresp.Body.Close()
@@ -738,6 +787,9 @@ func fetchOnce(ctx context.Context, client *http.Client, rawURL string) (Respons
 
 	httpresp, err := client.Do(req)
 	if err != nil {
+		if isUnreachableErr(err) {
+			markHostDead(hostOf(rawURL))
+		}
 		return Response{}, err
 	}
 	defer httpresp.Body.Close()

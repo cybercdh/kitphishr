@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -134,7 +135,7 @@ func main() {
 				}
 				res, err := AttemptTarget(ctx, client, limiter, target)
 				if err != nil {
-					if verbose {
+					if verbose && !errors.Is(err, ErrHostDead) {
 						color.Red.Printf("error fetching %s: %s\n", target.URL, err)
 					}
 					continue

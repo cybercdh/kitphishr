@@ -4,14 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestGenerateTargets_PathTraversalAndZipGuess(t *testing.T) {
@@ -578,6 +582,60 @@ func TestClaimKitURL_DedupsWithinRun(t *testing.T) {
 	}
 	if !claimKitURL("http://x.com/other.zip") {
 		t.Error("claim of different URL should succeed")
+	}
+}
+
+func TestDeadHostShortCircuit(t *testing.T) {
+	// Reset the shared dead-host set so this test is hermetic regardless
+	// of run order with other tests that touch real hostnames.
+	deadHostSet = sync.Map{}
+
+	ua = defaultUserAgent
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	client := MakeClient(5)
+	limiter := newHostRateLimiter(50, 50)
+
+	// RFC 6761 reserves the .invalid TLD as guaranteed-NXDOMAIN.
+	target := PhishUrls{URL: "http://kitphishr-deadhost-test.invalid/kit.zip", Source: "test"}
+
+	// First call: should fail and mark host dead.
+	if _, err := AttemptTarget(ctx, client, limiter, target); err == nil {
+		t.Fatal("expected error from .invalid host, got nil")
+	}
+	if !isHostMarkedDead("kitphishr-deadhost-test.invalid") {
+		t.Error("host should be marked dead after first unreachable error")
+	}
+
+	// Second call: should short-circuit instantly with ErrHostDead.
+	start := time.Now()
+	_, err := AttemptTarget(ctx, client, limiter, target)
+	elapsed := time.Since(start)
+	if !errors.Is(err, ErrHostDead) {
+		t.Errorf("expected ErrHostDead, got %v", err)
+	}
+	if elapsed > 100*time.Millisecond {
+		t.Errorf("short-circuit too slow: %v (should be near-instant)", elapsed)
+	}
+}
+
+func TestIsUnreachableErr(t *testing.T) {
+	if !isUnreachableErr(&net.DNSError{Err: "no such host", Name: "x.invalid", IsNotFound: true}) {
+		t.Error("DNS error should be classified unreachable")
+	}
+	if isUnreachableErr(nil) {
+		t.Error("nil should not be unreachable")
+	}
+	if isUnreachableErr(errors.New("random transient blip")) {
+		t.Error("plain string error should not classify as unreachable")
+	}
+}
+
+func TestRetryable_DoesNotRetryUnreachable(t *testing.T) {
+	dnsErr := &net.DNSError{Err: "no such host", Name: "x.invalid", IsNotFound: true}
+	if retryable(0, dnsErr) {
+		t.Error("DNS NXDOMAIN should not be retryable")
 	}
 }
 
