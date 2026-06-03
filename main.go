@@ -68,6 +68,13 @@ func resolveHref(base, href string) (string, bool) {
 }
 
 func main() {
+	// subcommand dispatch — `kitphishr analyze <kit>` routes to the analyzer;
+	// anything else (or no args) preserves the existing scan behaviour.
+	if len(os.Args) >= 2 && os.Args[1] == "analyze" {
+		runAnalyze(os.Args[2:])
+		return
+	}
+
 	flag.IntVar(&concurrency, "c", 50, "set the concurrency level")
 	flag.IntVar(&to, "t", 45, "set the connection timeout in seconds (useful to ensure the download of large files)")
 	flag.BoolVar(&verbose, "v", false, "get more info on URL attempts")
