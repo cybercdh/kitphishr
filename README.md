@@ -1,5 +1,6 @@
 # kitphishr
 
+[![Test](https://github.com/cybercdh/kitphishr/actions/workflows/test.yml/badge.svg)](https://github.com/cybercdh/kitphishr/actions/workflows/test.yml)
 [![License](https://img.shields.io/badge/license-GPLv2%20%2B%20commercial-blue.svg)](./LICENSING.md)
 [![Go Version](https://img.shields.io/badge/go-1.25%2B-00ADD8.svg)](https://go.dev/)
 
