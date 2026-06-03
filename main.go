@@ -36,6 +36,7 @@ var (
 	wordlistPath     string
 	extensionsFlag   string
 	progressInterval time.Duration
+	forceFeeds       bool
 	idx              *Index
 
 	seenKitURLsMu sync.Mutex
@@ -122,6 +123,7 @@ func main() {
 	flag.StringVar(&wordlistPath, "wordlist", "", "path to a wordlist of common archive filenames, one per line (built-in default if empty; pass /dev/null to disable wordlist guessing)")
 	flag.StringVar(&extensionsFlag, "extensions", "zip", "comma-separated list of archive extensions to guess (e.g. zip,tar.gz,rar,7z)")
 	flag.DurationVar(&progressInterval, "progress", 30*time.Second, "interval between progress reports to stderr (0 to disable)")
+	flag.BoolVar(&forceFeeds, "feeds", false, "always fetch URLs from the built-in threat-intel feeds (overrides stdin / TTY auto-detection; needed for scheduled / containerised runs)")
 	flag.Parse()
 
 	scanStart := time.Now()
@@ -244,7 +246,7 @@ func main() {
 		}()
 	}
 
-	input, err := GetUserInput()
+	input, err := GetUserInput(forceFeeds)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "There was an error getting URLs from feeds.\n")
 		os.Exit(3)

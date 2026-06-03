@@ -443,8 +443,16 @@ func parseTweetFeedCSV(r io.Reader) ([]PhishUrls, error) {
 /*
 get a list of urls either from the user piping into this
 program, or fetch the latest phishing urls from the feeds.
+
+If forceFeeds is true, always fetch from feeds regardless of TTY
+state. This is the right behaviour for scheduled/containerised runs
+where there's no TTY but also no stdin pipe — without it the scanner
+would read from an empty stdin and scan nothing.
 */
-func GetUserInput() ([]PhishUrls, error) {
+func GetUserInput(forceFeeds bool) ([]PhishUrls, error) {
+	if forceFeeds {
+		return GetPhishURLsFromManyFeeds()
+	}
 	var urls []PhishUrls
 	if termutil.Isatty(os.Stdin.Fd()) {
 		return GetPhishURLsFromManyFeeds()

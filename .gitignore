@@ -13,3 +13,6 @@
 # Default output directory
 /kits/
 
+
+# Deployment artifacts (AWS-specific, kept in a separate private location)
+/deploy/
