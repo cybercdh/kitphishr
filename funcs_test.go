@@ -585,6 +585,61 @@ func TestClaimKitURL_DedupsWithinRun(t *testing.T) {
 	}
 }
 
+func TestGenerateTargets_InterleavesAcrossHosts(t *testing.T) {
+	ctx := context.Background()
+	in := []PhishUrls{
+		{URL: "http://a.example/path1", Source: "x"},
+		{URL: "http://b.example/path2", Source: "x"},
+		{URL: "http://c.example/path3", Source: "x"},
+	}
+	ch := GenerateTargets(ctx, in, nil, []string{"zip"})
+
+	// Collect the first 6 URLs emitted (2 per host worth). With proper
+	// round-robin interleaving, the first 3 should cover all 3 hosts.
+	var firstThree []string
+	count := 0
+	for u := range ch {
+		if count < 3 {
+			firstThree = append(firstThree, hostOf(u.URL))
+		}
+		count++
+		if count >= 6 {
+			// drain the rest so the producer goroutine finishes
+			go func() {
+				for range ch {
+				}
+			}()
+			break
+		}
+	}
+
+	// First 3 URLs must touch all 3 hosts, not just one.
+	seenHosts := make(map[string]bool)
+	for _, h := range firstThree {
+		seenHosts[h] = true
+	}
+	if len(seenHosts) != 3 {
+		t.Errorf("expected first 3 emitted URLs to cover 3 distinct hosts, got %v (hosts: %v)", firstThree, seenHosts)
+	}
+}
+
+func TestHostRateLimiter_UnlimitedWhenRPSZero(t *testing.T) {
+	limiter := newHostRateLimiter(0, 0)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	// 1000 consecutive Wait calls should return near-instantly when unlimited.
+	start := time.Now()
+	for range 1000 {
+		if err := limiter.Wait(ctx, "example.com"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+		t.Errorf("unlimited limiter too slow: 1000 waits took %v", elapsed)
+	}
+}
+
 func TestDeadHostShortCircuit(t *testing.T) {
 	// Reset the shared dead-host set so this test is hermetic regardless
 	// of run order with other tests that touch real hostnames.

@@ -208,14 +208,24 @@ func (i *Index) Close() error {
 type hostRateLimiter struct {
 	mu       sync.Mutex
 	limiters map[string]*rate.Limiter
-	rps      float64
+	rate     rate.Limit
 	burst    int
 }
 
+// newHostRateLimiter builds a per-host token bucket. Passing rps <= 0
+// returns an "unlimited" limiter — useful when scanning burner phishing
+// infrastructure where the politeness/throughput trade-off doesn't apply.
 func newHostRateLimiter(rps float64, burst int) *hostRateLimiter {
+	limit := rate.Limit(rps)
+	if rps <= 0 {
+		limit = rate.Inf
+		if burst < 1 {
+			burst = 1
+		}
+	}
 	return &hostRateLimiter{
 		limiters: make(map[string]*rate.Limiter),
-		rps:      rps,
+		rate:     limit,
 		burst:    burst,
 	}
 }
@@ -226,12 +236,15 @@ func (h *hostRateLimiter) limiterFor(host string) *rate.Limiter {
 	if l, ok := h.limiters[host]; ok {
 		return l
 	}
-	l := rate.NewLimiter(rate.Limit(h.rps), h.burst)
+	l := rate.NewLimiter(h.rate, h.burst)
 	h.limiters[host] = l
 	return l
 }
 
 func (h *hostRateLimiter) Wait(ctx context.Context, host string) error {
+	if h.rate == rate.Inf {
+		return nil // skip the syscall entirely
+	}
 	return h.limiterFor(host).Wait(ctx)
 }
 
@@ -403,17 +416,31 @@ guess for each (word, ext) pair. e.g. for /foo/bar with wordlist
 	... (and similarly for /foo and /)
 */
 func GenerateTargets(ctx context.Context, urls []PhishUrls, wordlist []string, extensions []string) chan PhishUrls {
-	out := make(chan PhishUrls, 1)
+	out := make(chan PhishUrls, 128)
 	go func() {
 		defer close(out)
 		seen := make(map[string]bool)
-		emit := func(u string, source string) bool {
+
+		// Group all variants by host so we can round-robin emission: one
+		// URL per host per round. Without this, the producer dumps 80+
+		// variants for host A into the buffered targets channel before
+		// any URL for host B appears, leaving 50 workers contending for
+		// host A's single per-host rate limiter while the other 49 sit
+		// idle. Round-robin keeps every host's queue active in parallel.
+		hostQueues := make(map[string][]PhishUrls)
+		hostOrder := []string{}
+		add := func(u, source string) {
 			if seen[u] {
-				return true
+				return
 			}
 			seen[u] = true
-			return sendTarget(ctx, out, PhishUrls{URL: u, Source: source})
+			h := hostOf(u)
+			if _, exists := hostQueues[h]; !exists {
+				hostOrder = append(hostOrder, h)
+			}
+			hostQueues[h] = append(hostQueues[h], PhishUrls{URL: u, Source: source})
 		}
+
 		for _, row := range urls {
 			u, err := url.Parse(row.URL)
 			if err != nil {
@@ -424,30 +451,20 @@ func GenerateTargets(ctx context.Context, urls []PhishUrls, wordlist []string, e
 				_path := paths[:len(paths)-i]
 				tmp_url := u.Scheme + "://" + u.Host + strings.Join(_path, "/")
 
-				if !emit(tmp_url, row.Source) {
-					return
-				}
+				add(tmp_url, row.Source)
 
-				// trailing-slash variant — different resource at the HTTP layer
 				if !strings.HasSuffix(tmp_url, "/") {
-					if !emit(tmp_url+"/", row.Source) {
-						return
-					}
+					add(tmp_url+"/", row.Source)
 				}
 
-				// ${path}.${ext} extension guesses (skip nonsensical /.ext
-				// and bare-host.ext)
 				for _, ext := range extensions {
 					guess := tmp_url + "." + ext
 					if strings.HasSuffix(guess, "/."+ext) || strings.Count(guess, "/") < 3 {
 						continue
 					}
-					if !emit(guess, row.Source) {
-						return
-					}
+					add(guess, row.Source)
 				}
 
-				// ${path-as-dir}/${word}.${ext} wordlist guesses
 				dirBase := tmp_url
 				if !strings.HasSuffix(dirBase, "/") {
 					dirBase += "/"
@@ -457,11 +474,29 @@ func GenerateTargets(ctx context.Context, urls []PhishUrls, wordlist []string, e
 				}
 				for _, word := range wordlist {
 					for _, ext := range extensions {
-						if !emit(dirBase+word+"."+ext, row.Source) {
-							return
-						}
+						add(dirBase+word+"."+ext, row.Source)
 					}
 				}
+			}
+		}
+
+		// Round-robin emit: one URL per host per round until all queues
+		// are drained. This maximises parallelism across hosts.
+		for {
+			anySent := false
+			for _, h := range hostOrder {
+				q := hostQueues[h]
+				if len(q) == 0 {
+					continue
+				}
+				if !sendTarget(ctx, out, q[0]) {
+					return
+				}
+				hostQueues[h] = q[1:]
+				anySent = true
+			}
+			if !anySent {
+				return
 			}
 		}
 	}()
@@ -698,7 +733,14 @@ func retryable(statusCode int, err error) bool {
 	return false
 }
 
-const maxAttempts = 3
+const (
+	// maxAttempts is total tries (1 initial + retries on transient errors).
+	// ffuf-style fail-fast: one retry is enough for transient blips; more
+	// just slows the scanner against persistently-broken targets.
+	maxAttempts = 2
+	// initialBackoff is the first retry delay. Exponential after that.
+	initialBackoff = 100 * time.Millisecond
+)
 
 func probeWithRetry(ctx context.Context, client *http.Client, rawURL string) (Response, error) {
 	var lastErr error
@@ -741,7 +783,7 @@ func fetchWithRetry(ctx context.Context, client *http.Client, rawURL string) (Re
 }
 
 func backoff(ctx context.Context, attempt int) bool {
-	d := time.Duration(500*(1<<attempt)) * time.Millisecond
+	d := initialBackoff * time.Duration(1<<attempt)
 	select {
 	case <-ctx.Done():
 		return false
@@ -756,8 +798,9 @@ func probeOnce(ctx context.Context, client *http.Client, rawURL string) (Respons
 		return Response{}, err
 	}
 	req.Header.Set("User-Agent", ua)
-	req.Header.Set("Connection", "close")
-	req.Close = true
+	// Keep-alive is left on: we make many requests to the same host and
+	// re-using the connection eliminates a TLS handshake per request,
+	// which dominates per-request latency for HTTPS targets.
 
 	httpresp, err := client.Do(req)
 	if err != nil {
@@ -782,8 +825,7 @@ func fetchOnce(ctx context.Context, client *http.Client, rawURL string) (Respons
 		return Response{}, err
 	}
 	req.Header.Set("User-Agent", ua)
-	req.Header.Set("Connection", "close")
-	req.Close = true
+	// Keep-alive on — see probeOnce comment.
 
 	httpresp, err := client.Do(req)
 	if err != nil {
