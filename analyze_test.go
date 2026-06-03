@@ -32,7 +32,7 @@ $ok = "real-attacker@gmail.com";  // gmail IS real-attacker territory; keep it
 `
 
 func TestAnalyzer_ScanExtractsAllIndicators(t *testing.T) {
-	acc := newAnalyzer()
+	acc := newAnalyzer(nil)
 	acc.scan([]byte(samplePHPMailer))
 
 	if len(acc.emails) != 2 {
@@ -58,7 +58,7 @@ func TestAnalyzer_ScanExtractsAllIndicators(t *testing.T) {
 }
 
 func TestAnalyzer_PlaceholderFiltering(t *testing.T) {
-	acc := newAnalyzer()
+	acc := newAnalyzer(nil)
 	acc.scan([]byte(samplePHPWithPlaceholders))
 
 	// real-attacker@gmail.com should be kept
@@ -74,7 +74,7 @@ func TestAnalyzer_PlaceholderFiltering(t *testing.T) {
 }
 
 func TestAnalyzer_DeduplicatesAcrossFiles(t *testing.T) {
-	acc := newAnalyzer()
+	acc := newAnalyzer(nil)
 	acc.scan([]byte(samplePHPMailer))
 	acc.scan([]byte(samplePHPMailer))
 	acc.scan([]byte(samplePHPMailer))
@@ -90,7 +90,7 @@ func TestAnalyzePath_Zip(t *testing.T) {
 		"assets/logo.png": "binary garbage — should be skipped",
 		"readme.txt":      "Author: someone@attacker-mail.com",
 	})
-	r := AnalyzePath(zipPath)
+	r := AnalyzePath(zipPath, nil)
 	if r.SHA256 == "" {
 		t.Error("expected SHA256 to be populated for a .zip input")
 	}
@@ -109,7 +109,7 @@ func TestAnalyzePath_Directory(t *testing.T) {
 	mustWrite(t, filepath.Join(dir, "assets/style.css"), "body{color:red}")
 	mustWrite(t, filepath.Join(dir, "results.txt"), "captured@victim-domain.org\npassword=hunter2")
 
-	r := AnalyzePath(dir)
+	r := AnalyzePath(dir, nil)
 	if r.SHA256 != "" {
 		t.Error("SHA256 should be empty for directory inputs")
 	}
@@ -120,7 +120,7 @@ func TestAnalyzePath_Directory(t *testing.T) {
 }
 
 func TestAnalyzePath_MissingInput(t *testing.T) {
-	r := AnalyzePath("/no/such/path/exists")
+	r := AnalyzePath("/no/such/path/exists", nil)
 	if len(r.Errors) == 0 {
 		t.Error("expected an error for missing input")
 	}

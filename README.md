@@ -10,7 +10,7 @@ kitphishr scans suspected phishing URLs for exposed kit archives — open direct
 
 ## Highlights
 
-- **Two subcommands.** `kitphishr` scans URLs for kits; `kitphishr analyze` extracts attacker indicators from captured kits.
+- **Two subcommands.** `kitphishr` scans URLs for kits; `kitphishr analyze` extracts attacker indicators and classifies the impersonated brand from captured kits.
 - **Built-in threat feeds.** Pulls fresh URLs from PhishTank, OpenPhish, PhishStats, and the Phishing.Database project — or accept a custom URL list on stdin.
 - **Polite by default.** Per-host rate limiting, retry with exponential backoff, and graceful Ctrl-C handling.
 - **Structured output.** JSONL records with SHA256-keyed deduplication and source-feed provenance, designed to stream into Elastic, Splunk, MISP, or any TI pipeline.
@@ -48,7 +48,7 @@ Each saved kit appends a JSONL record to `kits/index.jsonl`:
 `kitphishr analyze` produces records like:
 
 ```json
-{"path":"kits/a4b....zip","sha256":"a4b...","size":102400,"files_scanned":17,"emails":["drop@attacker.ru","backup@attacker.ru"],"telegram_bots":["5234567890:AAE..."],"telegram_chat_ids":["987654321"],"discord_webhooks":["https://discord.com/api/webhooks/..."]}
+{"path":"kits/a4b....zip","sha256":"a4b...","size":102400,"files_scanned":17,"brands":[{"name":"Microsoft","hits":42}],"emails":["drop@attacker.ru","backup@attacker.ru"],"telegram_bots":["5234567890:AAE..."],"telegram_chat_ids":["987654321"],"discord_webhooks":["https://discord.com/api/webhooks/..."]}
 ```
 
 Identical kits captured at different URLs are deduplicated by SHA256 — one file on disk, N entries in the index.
@@ -75,6 +75,7 @@ Identical kits captured at different URLs are deduplicated by SHA256 — one fil
 | Flag | Default | Description |
 |---|---|---|
 | `-o <path>` | `-` (stdout) | output destination |
+| `-brands <path>` | (built-in) | JSON file of brand signatures (see `brands.go` for the default list and schema) |
 
 Targets can be passed as arguments or piped via stdin.
 

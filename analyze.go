@@ -3,6 +3,7 @@ package main
 import (
 	"archive/zip"
 	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -52,21 +53,23 @@ var (
 
 // AnalyzeResult is the JSONL record emitted for each kit analysed.
 type AnalyzeResult struct {
-	Path            string   `json:"path"`
-	SHA256          string   `json:"sha256,omitempty"`
-	Size            int64    `json:"size,omitempty"`
-	FilesScanned    int      `json:"files_scanned"`
-	Emails          []string `json:"emails,omitempty"`
-	TelegramBots    []string `json:"telegram_bots,omitempty"`
-	TelegramChatIDs []string `json:"telegram_chat_ids,omitempty"`
-	DiscordWebhooks []string `json:"discord_webhooks,omitempty"`
-	Errors          []string `json:"errors,omitempty"`
+	Path            string     `json:"path"`
+	SHA256          string     `json:"sha256,omitempty"`
+	Size            int64      `json:"size,omitempty"`
+	FilesScanned    int        `json:"files_scanned"`
+	Brands          []BrandHit `json:"brands,omitempty"`
+	Emails          []string   `json:"emails,omitempty"`
+	TelegramBots    []string   `json:"telegram_bots,omitempty"`
+	TelegramChatIDs []string   `json:"telegram_chat_ids,omitempty"`
+	DiscordWebhooks []string   `json:"discord_webhooks,omitempty"`
+	Errors          []string   `json:"errors,omitempty"`
 }
 
 // runAnalyze is the entry point for `kitphishr analyze`.
 func runAnalyze(args []string) {
 	fset := flag.NewFlagSet("analyze", flag.ExitOnError)
 	outputPath := fset.String("o", "-", "output destination (- for stdout)")
+	brandsPath := fset.String("brands", "", "path to a JSON file of brand signatures (built-in default if empty)")
 	fset.Usage = func() {
 		fmt.Fprintf(os.Stderr, "usage: kitphishr analyze [flags] <zip-or-dir>...\n")
 		fmt.Fprintf(os.Stderr, "       (or pipe a newline-separated list of paths on stdin)\n\n")
@@ -91,6 +94,12 @@ func runAnalyze(args []string) {
 		os.Exit(2)
 	}
 
+	brands, err := LoadBrandSignatures(*brandsPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to load brand signatures %q: %s\n", *brandsPath, err)
+		os.Exit(1)
+	}
+
 	var out *os.File = os.Stdout
 	if *outputPath != "-" {
 		f, err := os.Create(*outputPath)
@@ -104,7 +113,7 @@ func runAnalyze(args []string) {
 
 	enc := json.NewEncoder(out)
 	for _, t := range targets {
-		result := AnalyzePath(t)
+		result := AnalyzePath(t, brands)
 		if err := enc.Encode(result); err != nil {
 			fmt.Fprintf(os.Stderr, "failed to write result for %s: %s\n", t, err)
 		}
@@ -113,7 +122,7 @@ func runAnalyze(args []string) {
 
 // AnalyzePath dispatches on file/dir/zip and returns the aggregated result.
 // Exported for use by tests.
-func AnalyzePath(path string) AnalyzeResult {
+func AnalyzePath(path string, brands []BrandSignature) AnalyzeResult {
 	r := AnalyzeResult{Path: path}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -121,17 +130,17 @@ func AnalyzePath(path string) AnalyzeResult {
 		return r
 	}
 	if info.IsDir() {
-		return analyzeDir(path, r)
+		return analyzeDir(path, r, brands)
 	}
 	r.Size = info.Size()
 	if sum, err := hashFile(path); err == nil {
 		r.SHA256 = sum
 	}
 	if strings.HasSuffix(strings.ToLower(path), ".zip") {
-		return analyzeZip(path, r)
+		return analyzeZip(path, r, brands)
 	}
 	// treat as a single file
-	acc := newAnalyzer()
+	acc := newAnalyzer(brands)
 	if err := scanFile(path, acc); err != nil {
 		r.Errors = append(r.Errors, err.Error())
 	}
@@ -139,7 +148,7 @@ func AnalyzePath(path string) AnalyzeResult {
 	return finalise(r, acc)
 }
 
-func analyzeZip(path string, r AnalyzeResult) AnalyzeResult {
+func analyzeZip(path string, r AnalyzeResult, brands []BrandSignature) AnalyzeResult {
 	zr, err := zip.OpenReader(path)
 	if err != nil {
 		r.Errors = append(r.Errors, fmt.Sprintf("open zip: %s", err))
@@ -147,7 +156,7 @@ func analyzeZip(path string, r AnalyzeResult) AnalyzeResult {
 	}
 	defer zr.Close()
 
-	acc := newAnalyzer()
+	acc := newAnalyzer(brands)
 	scanned := 0
 	for _, f := range zr.File {
 		if scanned >= maxAnalyzeFiles {
@@ -182,8 +191,8 @@ func analyzeZip(path string, r AnalyzeResult) AnalyzeResult {
 	return finalise(r, acc)
 }
 
-func analyzeDir(path string, r AnalyzeResult) AnalyzeResult {
-	acc := newAnalyzer()
+func analyzeDir(path string, r AnalyzeResult, brands []BrandSignature) AnalyzeResult {
+	acc := newAnalyzer(brands)
 	scanned := 0
 	err := filepath.WalkDir(path, func(p string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -220,18 +229,22 @@ func analyzeDir(path string, r AnalyzeResult) AnalyzeResult {
 // --- accumulator ---
 
 type analyzer struct {
-	emails   map[string]struct{}
-	tgBots   map[string]struct{}
-	tgChats  map[string]struct{}
-	discords map[string]struct{}
+	emails    map[string]struct{}
+	tgBots    map[string]struct{}
+	tgChats   map[string]struct{}
+	discords  map[string]struct{}
+	brands    []BrandSignature
+	brandHits map[string]int
 }
 
-func newAnalyzer() *analyzer {
+func newAnalyzer(brands []BrandSignature) *analyzer {
 	return &analyzer{
-		emails:   make(map[string]struct{}),
-		tgBots:   make(map[string]struct{}),
-		tgChats:  make(map[string]struct{}),
-		discords: make(map[string]struct{}),
+		emails:    make(map[string]struct{}),
+		tgBots:    make(map[string]struct{}),
+		tgChats:   make(map[string]struct{}),
+		discords:  make(map[string]struct{}),
+		brands:    brands,
+		brandHits: make(map[string]int),
 	}
 }
 
@@ -252,6 +265,9 @@ func (a *analyzer) scan(content []byte) {
 	}
 	for _, m := range discordWebhookPattern.FindAll(content, -1) {
 		a.discords[string(m)] = struct{}{}
+	}
+	if len(a.brands) > 0 {
+		scanBrandsInto(bytes.ToLower(content), a.brands, a.brandHits)
 	}
 }
 
@@ -318,6 +334,7 @@ func hashFile(path string) (string, error) {
 }
 
 func finalise(r AnalyzeResult, a *analyzer) AnalyzeResult {
+	r.Brands = finaliseBrandHits(a.brandHits)
 	r.Emails = sortedKeys(a.emails)
 	r.TelegramBots = sortedKeys(a.tgBots)
 	r.TelegramChatIDs = sortedKeys(a.tgChats)
