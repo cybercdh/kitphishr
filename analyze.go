@@ -57,6 +57,7 @@ type AnalyzeResult struct {
 	SHA256          string     `json:"sha256,omitempty"`
 	Size            int64      `json:"size,omitempty"`
 	FilesScanned    int        `json:"files_scanned"`
+	FileNames       []string   `json:"file_names,omitempty"`
 	Brands          []BrandHit `json:"brands,omitempty"`
 	Authors         []string   `json:"authors,omitempty"`
 	ICQHandles      []string   `json:"icq_handles,omitempty"`
@@ -170,6 +171,10 @@ func analyzeZip(path string, r AnalyzeResult, brands []BrandSignature) AnalyzeRe
 		if f.FileInfo().IsDir() {
 			continue
 		}
+		// Record EVERY file (incl. images / fonts / non-PHP). The
+		// indicator scan still only opens relevant extensions but the
+		// full file list is a fingerprint of the kit's shape.
+		acc.recordFile(f.Name)
 		if !relevantPath(f.Name) {
 			continue
 		}
@@ -208,6 +213,14 @@ func analyzeDir(path string, r AnalyzeResult, brands []BrandSignature) AnalyzeRe
 		if scanned >= maxAnalyzeFiles {
 			return filepath.SkipAll
 		}
+		// Store path relative to the kit root so it doesn't leak local
+		// filesystem layout (e.g. /Users/cdh/kits/abc/index.php -> abc/index.php).
+		rel, relErr := filepath.Rel(path, p)
+		if relErr == nil && rel != "" {
+			acc.recordFile(rel)
+		} else {
+			acc.recordFile(p)
+		}
 		if !relevantPath(p) {
 			return nil
 		}
@@ -241,6 +254,7 @@ type analyzer struct {
 	icqs      map[string]struct{}
 	skypes    map[string]struct{}
 	mailDrops map[string]struct{}
+	fileNames map[string]struct{}
 	brands    []BrandSignature
 	brandHits map[string]int
 }
@@ -255,9 +269,21 @@ func newAnalyzer(brands []BrandSignature) *analyzer {
 		icqs:      make(map[string]struct{}),
 		skypes:    make(map[string]struct{}),
 		mailDrops: make(map[string]struct{}),
+		fileNames: make(map[string]struct{}),
 		brands:    brands,
 		brandHits: make(map[string]int),
 	}
+}
+
+// recordFile registers a file path encountered inside a kit. Stored
+// separately from the indicator scans so we capture EVERY file (even
+// non-relevant ones like images / fonts) for the file-listing index.
+func (a *analyzer) recordFile(name string) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+	a.fileNames[name] = struct{}{}
 }
 
 func (a *analyzer) scan(content []byte) {
@@ -357,6 +383,7 @@ func finalise(r AnalyzeResult, a *analyzer) AnalyzeResult {
 	r.TelegramBots = sortedKeys(a.tgBots)
 	r.TelegramChatIDs = sortedKeys(a.tgChats)
 	r.DiscordWebhooks = sortedKeys(a.discords)
+	r.FileNames = sortedKeys(a.fileNames)
 	return r
 }
 
