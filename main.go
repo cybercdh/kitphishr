@@ -36,6 +36,7 @@ var (
 	wordlistPath     string
 	extensionsFlag   string
 	progressInterval time.Duration
+	scanTimeout      time.Duration
 	forceFeeds       bool
 	idx              *Index
 
@@ -123,6 +124,7 @@ func main() {
 	flag.StringVar(&wordlistPath, "wordlist", "", "path to a wordlist of common archive filenames, one per line (built-in default if empty; pass /dev/null to disable wordlist guessing)")
 	flag.StringVar(&extensionsFlag, "extensions", "zip", "comma-separated list of archive extensions to guess (e.g. zip,tar.gz,rar,7z)")
 	flag.DurationVar(&progressInterval, "progress", 30*time.Second, "interval between progress reports to stderr (0 to disable)")
+	flag.DurationVar(&scanTimeout, "timeout", 0, "max total scan duration (e.g. 30m, 1h); 0 = no limit. Workers drain gracefully when the deadline fires so partial captures survive.")
 	flag.BoolVar(&forceFeeds, "feeds", false, "always fetch URLs from the built-in threat-intel feeds (overrides stdin / TTY auto-detection; needed for scheduled / containerised runs)")
 	flag.Parse()
 
@@ -138,6 +140,20 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	if scanTimeout > 0 {
+		var timeoutCancel context.CancelFunc
+		ctx, timeoutCancel = context.WithTimeout(ctx, scanTimeout)
+		defer timeoutCancel()
+		// Print a single notice when the deadline fires so the user can
+		// distinguish "scan finished naturally" from "scan stopped early".
+		go func(deadline time.Duration) {
+			<-ctx.Done()
+			if ctx.Err() == context.DeadlineExceeded {
+				fmt.Fprintf(os.Stderr, "scan timeout (%s) reached, draining workers...\n", deadline)
+			}
+		}(scanTimeout)
+	}
 
 	go runProgress(ctx, progressInterval, scanStart, progressDone)
 
