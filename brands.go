@@ -124,15 +124,89 @@ func LoadBrandSignatures(path string) ([]BrandSignature, error) {
 
 // scanBrandsInto increments hits for each brand whose keyword appears in
 // the lowercased content. Caller is responsible for lowercasing once per
-// file rather than per-brand to amortise the cost.
-func scanBrandsInto(lowered []byte, brands []BrandSignature, hits map[string]int) {
+// file rather than per-brand to amortise the cost. `weight` multiplies
+// each raw substring hit — content uses 1, file paths use a higher value
+// (a brand name in a path is a strong intent signal vs incidental
+// mention in an embedded library).
+func scanBrandsInto(lowered []byte, brands []BrandSignature, hits map[string]int, weight int) {
+	if weight <= 0 {
+		weight = 1
+	}
 	for _, b := range brands {
 		for _, kw := range b.Keywords {
 			if n := bytes.Count(lowered, []byte(kw)); n > 0 {
-				hits[b.Name] += n
+				hits[b.Name] += n * weight
 			}
 		}
 	}
+}
+
+// scanBrandsForName scores a path or archive filename against the brand
+// keywords AND against bare brand names (case-insensitive). The bare-name
+// pass is what catches "NETFLIX_2K24.zip" — kit authors label archives
+// with the brand they're targeting, even when the keyword list only has
+// canonical URLs.
+func scanBrandsForName(name string, brands []BrandSignature, hits map[string]int, weight int) {
+	if name == "" {
+		return
+	}
+	if weight <= 0 {
+		weight = 1
+	}
+	lowered := []byte(strings.ToLower(name))
+	for _, b := range brands {
+		// keyword pass (URLs, distinctive phrases)
+		for _, kw := range b.Keywords {
+			if n := bytes.Count(lowered, []byte(kw)); n > 0 {
+				hits[b.Name] += n * weight
+			}
+		}
+		// bare-name pass — only on filenames, never content, to avoid
+		// "google" in a stack trace polluting unrelated kits' scores
+		bare := []byte(strings.ToLower(b.Name))
+		if len(bare) >= 3 && bytes.Contains(lowered, bare) {
+			hits[b.Name] += weight
+		}
+	}
+}
+
+// applyArchiveNameTiebreaker promotes a runner-up brand to primary when
+// the archive's filename mentions it. Guards against two failure modes:
+//
+//   1. Generic third-party assets (Google Fonts, reCAPTCHA, googleapis.com)
+//      outscore the kit's actual target — "NETFLIX_2K24.zip" is
+//      unambiguously Netflix even if .php files mention google more.
+//   2. A misleading or repurposed archive name overriding strong content —
+//      a Microsoft kit named "paypal_creds.zip" is still a Microsoft kit.
+//
+// Rule: swap only when the candidate has its own content support
+// (≥ minBrandHits from file content, not just from path/filename
+// scoring) AND the leader's content lead is thin (≤ 2× the candidate's
+// content hits). Without content backing, an archive name hint never
+// overrides a stronger content winner.
+func applyArchiveNameTiebreaker(brands []BrandHit, archiveName string, contentHits map[string]int) []BrandHit {
+	if len(brands) < 2 || archiveName == "" {
+		return brands
+	}
+	lowered := strings.ToLower(archiveName)
+	topContent := contentHits[brands[0].Name]
+	for i := 1; i < len(brands); i++ {
+		candidate := brands[i]
+		bare := strings.ToLower(candidate.Name)
+		if len(bare) < 3 || !strings.Contains(lowered, bare) {
+			continue
+		}
+		candContent := contentHits[candidate.Name]
+		if candContent < minBrandHits {
+			continue // filename-only support isn't enough to dethrone the leader
+		}
+		if topContent > candContent*2 {
+			continue // leader's content lead is decisive
+		}
+		brands[0], brands[i] = brands[i], brands[0]
+		return brands
+	}
+	return brands
 }
 
 // finaliseBrandHits applies the minimum-hits threshold and sorts the

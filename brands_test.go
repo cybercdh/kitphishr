@@ -181,6 +181,51 @@ $info = "Visit hmrc.gov.uk for more information.";
 	}
 }
 
+// Regression: a generic kit re-skinned as Netflix used to come out
+// attributed to Google because the kit shipped Google Fonts /
+// reCAPTCHA / googleapis.com URLs that scored higher than Netflix's
+// narrow URL keyword set. The archive filename (set by the kit author)
+// must outweigh incidental third-party brand mentions.
+func TestBrandClassification_ArchiveNameWinsCloseCall(t *testing.T) {
+	// Content is entirely Google: 5+ google keyword hits, zero Netflix.
+	const googleHeavyKit = `<?php
+$recaptcha = "https://www.google.com/recaptcha/api.js";
+$fonts = "https://fonts.googleapis.com/css?family=Roboto";
+$oauth = "https://accounts.google.com/o/oauth2/auth";
+$api = "https://googleapis.com/oauth2/v1/userinfo";
+$login_link = "https://myaccount.google.com/security";
+echo "Sign in with Gmail";
+?>`
+	acc := newAnalyzer(defaultBrandSignatures)
+	acc.recordArchiveName("NETFLIX_2K24.zip")
+	acc.recordFile("NETFLIX_2K24/index.php")
+	acc.scan([]byte(googleHeavyKit))
+	result := finalise(AnalyzeResult{}, acc)
+	if len(result.Brands) < 2 {
+		t.Fatalf("expected both Netflix and Google detected, got %+v", result.Brands)
+	}
+	if result.Brands[0].Name != "Netflix" {
+		t.Errorf("expected primary brand Netflix (filename signal), got %q (full ordering: %+v)",
+			result.Brands[0].Name, result.Brands)
+	}
+}
+
+// Sanity-check the inverse: when content is overwhelmingly one brand
+// and the filename only weakly mentions another, content should still
+// win. Prevents the tie-breaker from being too eager.
+func TestBrandClassification_ArchiveNameDoesNotOverturnStrongContent(t *testing.T) {
+	// Microsoft content with 15+ hits.
+	heavyMicrosoft := sampleMicrosoftKitPHP + sampleMicrosoftKitPHP + sampleMicrosoftKitPHP
+	acc := newAnalyzer(defaultBrandSignatures)
+	acc.recordArchiveName("paypal_creds.zip")
+	acc.scan([]byte(heavyMicrosoft))
+	result := finalise(AnalyzeResult{}, acc)
+	if len(result.Brands) == 0 || result.Brands[0].Name != "Microsoft" {
+		t.Errorf("expected primary brand Microsoft (strong content beats weak filename), got %+v",
+			result.Brands)
+	}
+}
+
 func TestLoadBrandSignatures_FromFile(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "brands.json")

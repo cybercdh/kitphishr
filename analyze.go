@@ -162,6 +162,7 @@ func analyzeZip(path string, r AnalyzeResult, brands []BrandSignature) AnalyzeRe
 	defer zr.Close()
 
 	acc := newAnalyzer(brands)
+	acc.recordArchiveName(filepath.Base(path))
 	scanned := 0
 	for _, f := range zr.File {
 		if scanned >= maxAnalyzeFiles {
@@ -256,34 +257,65 @@ type analyzer struct {
 	mailDrops map[string]struct{}
 	fileNames map[string]struct{}
 	brands    []BrandSignature
-	brandHits map[string]int
+	// Brand scores are tracked in TWO buckets so the tie-breaker can
+	// distinguish "this brand is here in the actual content" (a real
+	// phish signal) from "this brand is hinted by the kit author's
+	// labels" (a softer signal, easily faked by a repurposed archive).
+	// brandHits is the total emitted as BrandHit.Hits; brandContentHits
+	// is the subset that came from file CONTENT, not paths/archive name.
+	brandHits        map[string]int
+	brandContentHits map[string]int
+	// archiveName is the basename of the .zip the kit came in as (or "")
+	// for a directory walk.
+	archiveName string
 }
 
 func newAnalyzer(brands []BrandSignature) *analyzer {
 	return &analyzer{
-		emails:    make(map[string]struct{}),
-		tgBots:    make(map[string]struct{}),
-		tgChats:   make(map[string]struct{}),
-		discords:  make(map[string]struct{}),
-		authors:   make(map[string]struct{}),
-		icqs:      make(map[string]struct{}),
-		skypes:    make(map[string]struct{}),
-		mailDrops: make(map[string]struct{}),
-		fileNames: make(map[string]struct{}),
-		brands:    brands,
-		brandHits: make(map[string]int),
+		emails:           make(map[string]struct{}),
+		tgBots:           make(map[string]struct{}),
+		tgChats:          make(map[string]struct{}),
+		discords:         make(map[string]struct{}),
+		authors:          make(map[string]struct{}),
+		icqs:             make(map[string]struct{}),
+		skypes:           make(map[string]struct{}),
+		mailDrops:        make(map[string]struct{}),
+		fileNames:        make(map[string]struct{}),
+		brands:           brands,
+		brandHits:        make(map[string]int),
+		brandContentHits: make(map[string]int),
 	}
 }
 
 // recordFile registers a file path encountered inside a kit. Stored
 // separately from the indicator scans so we capture EVERY file (even
 // non-relevant ones like images / fonts) for the file-listing index.
+// The path is ALSO scored against brand signatures with weight 3 — a
+// file named `netflix-login.php` is a much stronger brand signal than
+// the word "netflix" appearing in a generic JS library's comments.
 func (a *analyzer) recordFile(name string) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return
 	}
 	a.fileNames[name] = struct{}{}
+	if len(a.brands) > 0 {
+		scanBrandsForName(name, a.brands, a.brandHits, 3)
+	}
+}
+
+// recordArchiveName captures the .zip filename for both the tie-breaker
+// in finaliseBrandHits and a heavy (weight 10) one-shot brand score —
+// the archive label is what the kit author *says* their target is.
+func (a *analyzer) recordArchiveName(name string) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+	a.archiveName = name
+	if len(a.brands) > 0 {
+		scanBrandsForName(name, a.brands, a.brandHits, 10)
+	}
 }
 
 func (a *analyzer) scan(content []byte) {
@@ -307,7 +339,9 @@ func (a *analyzer) scan(content []byte) {
 	scanAuthorsInto(content, a.authors, a.icqs, a.skypes)
 	scanMailDropsInto(content, a.mailDrops)
 	if len(a.brands) > 0 {
-		scanBrandsInto(bytes.ToLower(content), a.brands, a.brandHits)
+		lowered := bytes.ToLower(content)
+		scanBrandsInto(lowered, a.brands, a.brandHits, 1)
+		scanBrandsInto(lowered, a.brands, a.brandContentHits, 1)
 	}
 }
 
@@ -375,6 +409,7 @@ func hashFile(path string) (string, error) {
 
 func finalise(r AnalyzeResult, a *analyzer) AnalyzeResult {
 	r.Brands = finaliseBrandHits(a.brandHits)
+	r.Brands = applyArchiveNameTiebreaker(r.Brands, a.archiveName, a.brandContentHits)
 	r.Authors = sortedKeys(a.authors)
 	r.ICQHandles = sortedKeys(a.icqs)
 	r.SkypeHandles = sortedKeys(a.skypes)
