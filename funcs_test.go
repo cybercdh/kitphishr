@@ -282,6 +282,61 @@ func TestParseExtensions(t *testing.T) {
 	}
 }
 
+func TestLoadKnownHashes(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "known.txt")
+	good := "abcdef0123456789" + "abcdef0123456789" + "abcdef0123456789" + "abcdef0123456789"
+	upper := "ABCDEF0123456789" + "ABCDEF0123456789" + "ABCDEF0123456789" + "ABCDEF0123456789"
+	content := "# header\n\n" + good + "\n   " + upper + "   \nnotahash\n" + good[:63] + "\nzzzz" + good[4:] + "\n"
+	if err := os.WriteFile(p, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := LoadKnownHashes(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Both good and upper should land (upper is normalised to lower); the
+	// short, bad-char, and "notahash" entries should be skipped.
+	if len(out) != 2 {
+		t.Fatalf("expected 2 hashes, got %d: %v", len(out), out)
+	}
+	for _, h := range out {
+		if h != good { // upper normalises to good's value
+			t.Errorf("unexpected hash: %s", h)
+		}
+	}
+}
+
+func TestLoadKnownHashes_EmptyPath(t *testing.T) {
+	out, err := LoadKnownHashes("")
+	if err != nil || out != nil {
+		t.Errorf("empty path should return (nil, nil), got (%v, %v)", out, err)
+	}
+}
+
+func TestIndex_SeedHashes(t *testing.T) {
+	dir := t.TempDir()
+	idx, err := NewIndex(filepath.Join(dir, "index.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	hashes := []string{"a", "b", "c"}
+	added := idx.SeedHashes(hashes)
+	if added != 3 {
+		t.Errorf("first seed should add 3, got %d", added)
+	}
+	// Re-seeding should add 0 (already present).
+	if again := idx.SeedHashes(hashes); again != 0 {
+		t.Errorf("re-seed should add 0, got %d", again)
+	}
+	for _, h := range hashes {
+		if idx.SeenPath(h) == "" {
+			t.Errorf("seeded sha %q should be SeenPath-detectable", h)
+		}
+	}
+}
+
 func TestLoadWordlist_DefaultWhenEmpty(t *testing.T) {
 	w, err := LoadWordlist("")
 	if err != nil {

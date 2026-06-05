@@ -68,6 +68,41 @@ func hasArchiveExtension(s string) bool {
 	return false
 }
 
+// LoadKnownHashes reads a file of sha256 strings, one per line, with '#'
+// for comments. Used to seed the in-memory dedup index with hashes
+// captured by prior scans (cross-run dedup). Returns nil for empty path.
+// Lines that aren't 64-char lowercase hex are silently ignored.
+func LoadKnownHashes(path string) ([]string, error) {
+	if path == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.ToLower(strings.TrimSpace(line))
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if len(line) != 64 {
+			continue
+		}
+		valid := true
+		for _, c := range line {
+			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+				valid = false
+				break
+			}
+		}
+		if valid {
+			out = append(out, line)
+		}
+	}
+	return out, nil
+}
+
 // LoadWordlist reads a wordlist file (one entry per line, '#' for comments,
 // blank lines ignored). An empty path returns the built-in default.
 func LoadWordlist(path string) ([]string, error) {
@@ -168,6 +203,27 @@ func (i *Index) loadExisting() error {
 		return err
 	}
 	return nil
+}
+
+// SeedHashes pre-populates the dedup map with sha256s known from prior
+// runs (typically read from a Lambda-published derived/known-hashes.txt).
+// Doesn't overwrite an existing entry (loaded index records win since they
+// have the real saved path). The sentinel value identifies these as
+// known-from-elsewhere so future readers can distinguish.
+const knownHashSentinel = "known-from-prior-run"
+
+func (i *Index) SeedHashes(hashes []string) int {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	added := 0
+	for _, h := range hashes {
+		if _, ok := i.hashes[h]; ok {
+			continue
+		}
+		i.hashes[h] = knownHashSentinel
+		added++
+	}
+	return added
 }
 
 // SeenPath returns the saved path for a previously-recorded sha256, or "" if unseen.

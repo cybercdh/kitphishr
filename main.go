@@ -34,6 +34,7 @@ var (
 	rps              float64
 	burst            int
 	wordlistPath     string
+	knownHashesPath  string
 	extensionsFlag   string
 	progressInterval time.Duration
 	scanTimeout      time.Duration
@@ -126,6 +127,7 @@ func main() {
 	flag.DurationVar(&progressInterval, "progress", 30*time.Second, "interval between progress reports to stderr (0 to disable)")
 	flag.DurationVar(&scanTimeout, "timeout", 0, "max total scan duration (e.g. 30m, 1h); 0 = no limit. Workers drain gracefully when the deadline fires so partial captures survive.")
 	flag.BoolVar(&forceFeeds, "feeds", false, "always fetch URLs from the built-in threat-intel feeds (overrides stdin / TTY auto-detection; needed for scheduled / containerised runs)")
+	flag.StringVar(&knownHashesPath, "known-hashes", "", "path to a file of sha256 strings (one per line) to pre-seed the dedup index. Captures whose content matches a known sha get a dedup record in index.jsonl but are NOT saved to disk again. Used for cross-run dedup so repeated scans don't re-store the same kit.")
 	flag.Parse()
 
 	scanStart := time.Now()
@@ -173,6 +175,18 @@ func main() {
 			os.Exit(1)
 		}
 		defer idx.Close()
+
+		// Pre-seed dedup index with sha256s from prior runs, if supplied.
+		// Errors here are non-fatal — worst case we re-capture some kits.
+		if knownHashesPath != "" {
+			known, kerr := LoadKnownHashes(knownHashesPath)
+			if kerr != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to load known-hashes %q: %s\n", knownHashesPath, kerr)
+			} else if len(known) > 0 {
+				added := idx.SeedHashes(known)
+				fmt.Fprintf(os.Stderr, "seeded %d known sha256s for cross-run dedup (%d in file)\n", added, len(known))
+			}
+		}
 	}
 
 	targets := make(chan PhishUrls, concurrency)
