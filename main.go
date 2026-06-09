@@ -41,10 +41,17 @@ var (
 	forceFeeds       bool
 	emitKitJSON      bool
 	kitJSONBrands    []BrandSignature
+	scannedURLsPath  string
 	idx              *Index
 
 	seenKitURLsMu sync.Mutex
 	seenKitURLs   = make(map[string]struct{})
+
+	// scanned records the feed URLs we actually probed this run, keyed by the
+	// origin (path-explosion root). Written out at the end for cross-run scan
+	// dedup so subsequent runs skip URLs already exhausted within the window.
+	scannedMu sync.Mutex
+	scanned   = make(map[string]struct{})
 
 	attemptedCount atomic.Uint64
 	foundCount     atomic.Uint64
@@ -131,6 +138,7 @@ func main() {
 	flag.BoolVar(&forceFeeds, "feeds", false, "always fetch URLs from the built-in threat-intel feeds (overrides stdin / TTY auto-detection; needed for scheduled / containerised runs)")
 	flag.StringVar(&knownHashesPath, "known-hashes", "", "path to a file of sha256 strings (one per line) to pre-seed the dedup index. Captures whose content matches a known sha get a dedup record in index.jsonl but are NOT saved to disk again. Used for cross-run dedup so repeated scans don't re-store the same kit.")
 	flag.BoolVar(&emitKitJSON, "kit-json", false, "for each saved kit, also write <sha>.kit.json next to it (capture metadata + analysis) for event-driven ingestion. Requires -d.")
+	flag.StringVar(&scannedURLsPath, "scanned-urls", "", "path to a file of feed URLs (one per line) scanned within the dedup window. Matching feed URLs are skipped (not re-explored/re-probed) this run, and the URLs actually probed are written to <output-dir>/scanned-urls.txt. Used for cross-run scan dedup so we don't re-hammer hosts already exhausted recently.")
 	flag.Parse()
 
 	scanStart := time.Now()
@@ -216,6 +224,14 @@ func main() {
 				if ctx.Err() != nil {
 					return
 				}
+				// Record the feed URL as scanned the moment we commit to probing
+				// one of its targets — so even a dead/empty result counts (we
+				// looked) and a timed-out tail we never reached does not.
+				if target.Origin != "" {
+					scannedMu.Lock()
+					scanned[target.Origin] = struct{}{}
+					scannedMu.Unlock()
+				}
 				if verbose {
 					fmt.Printf("Attempting %s\n", target.URL)
 				}
@@ -295,6 +311,30 @@ func main() {
 		os.Exit(3)
 	}
 
+	// Cross-run scan dedup: drop feed URLs scanned within the dedup window, and
+	// tag every kept URL with its origin so the workers can record what we
+	// actually probe. Filtering here skips the whole path-explosion for already-
+	// scanned URLs — the expensive part — not just the capture.
+	skipSet, err := LoadScannedURLs(scannedURLsPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not load -scanned-urls %q: %s (scanning all)\n", scannedURLsPath, err)
+	}
+	kept := input[:0]
+	skipped := 0
+	for _, row := range input {
+		if _, seen := skipSet[row.URL]; seen {
+			skipped++
+			continue
+		}
+		row.Origin = row.URL
+		kept = append(kept, row)
+	}
+	input = kept
+	if skipped > 0 {
+		fmt.Fprintf(os.Stderr, "scan-dedup: skipped %d/%d feed URLs scanned within the window; scanning %d\n",
+			skipped, skipped+len(input), len(input))
+	}
+
 	urls := GenerateTargets(ctx, input, wordlist, extensions)
 
 sendLoop:
@@ -314,6 +354,22 @@ sendLoop:
 	sg.Wait()
 
 	close(progressDone)
+
+	// Persist the feed URLs we actually probed for cross-run scan dedup. The
+	// wrapper picks this up and records them with a TTL so the next run skips
+	// them. Best-effort: a write failure must not fail the scan.
+	if downloadKits {
+		scannedMu.Lock()
+		n := len(scanned)
+		err := WriteScannedURLs(filepath.Join(defaultOutputDir, "scanned-urls.txt"), scanned)
+		scannedMu.Unlock()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not write scanned-urls.txt: %s\n", err)
+		} else if n > 0 {
+			fmt.Fprintf(os.Stderr, "scan-dedup: recorded %d probed feed URLs to scanned-urls.txt\n", n)
+		}
+	}
+
 	fmt.Fprintf(os.Stderr, "Done. scanned=%d found=%d saved=%d dead-hosts=%d in %s\n",
 		attemptedCount.Load(), foundCount.Load(), savedCount.Load(), deadHostCount.Load(),
 		time.Since(scanStart).Round(time.Second))

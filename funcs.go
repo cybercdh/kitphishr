@@ -32,6 +32,10 @@ import (
 type PhishUrls struct {
 	URL    string `json:"url"`
 	Source string `json:"source,omitempty"`
+	// Origin is the feed URL this target was expanded from (the path-explosion
+	// root). Internal only — used to record which feed URLs we actually probed
+	// for cross-run scan dedup. Not serialised.
+	Origin string `json:"-"`
 }
 
 // kitArchiveNames is the built-in wordlist of common phishing-kit archive
@@ -101,6 +105,48 @@ func LoadKnownHashes(path string) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// LoadScannedURLs reads a file of feed URLs (one per line, '#' for comments,
+// blank lines ignored) that were scanned within the cross-run dedup window.
+// Matching feed URLs are skipped on this run so we don't re-explode + re-probe
+// paths for hosts we already exhausted recently. Returns an empty (non-nil) set
+// for an empty path. Feeds return URLs verbatim, so exact-string match is the
+// right key (no normalisation).
+func LoadScannedURLs(path string) (map[string]struct{}, error) {
+	out := make(map[string]struct{})
+	if path == "" {
+		return out, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return out, err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		out[line] = struct{}{}
+	}
+	return out, nil
+}
+
+// WriteScannedURLs writes the set of feed URLs actually probed this run (one per
+// line) so a wrapper can persist them with a TTL for cross-run scan dedup. Only
+// URLs we genuinely attempted are recorded: a timed-out run's unprobed tail is
+// left out so the next run still reaches it (with the freed budget from skipping
+// the already-scanned URLs). No-op for an empty set.
+func WriteScannedURLs(path string, scanned map[string]struct{}) error {
+	if len(scanned) == 0 {
+		return nil
+	}
+	var b strings.Builder
+	for u := range scanned {
+		b.WriteString(u)
+		b.WriteByte('\n')
+	}
+	return os.WriteFile(path, []byte(b.String()), 0640)
 }
 
 // LoadWordlist reads a wordlist file (one entry per line, '#' for comments,
@@ -550,7 +596,7 @@ func GenerateTargets(ctx context.Context, urls []PhishUrls, wordlist []string, e
 		// idle. Round-robin keeps every host's queue active in parallel.
 		hostQueues := make(map[string][]PhishUrls)
 		hostOrder := []string{}
-		add := func(u, source string) {
+		add := func(u, source, origin string) {
 			if seen[u] {
 				return
 			}
@@ -559,7 +605,7 @@ func GenerateTargets(ctx context.Context, urls []PhishUrls, wordlist []string, e
 			if _, exists := hostQueues[h]; !exists {
 				hostOrder = append(hostOrder, h)
 			}
-			hostQueues[h] = append(hostQueues[h], PhishUrls{URL: u, Source: source})
+			hostQueues[h] = append(hostQueues[h], PhishUrls{URL: u, Source: source, Origin: origin})
 		}
 
 		for _, row := range urls {
@@ -572,10 +618,10 @@ func GenerateTargets(ctx context.Context, urls []PhishUrls, wordlist []string, e
 				_path := paths[:len(paths)-i]
 				tmp_url := u.Scheme + "://" + u.Host + strings.Join(_path, "/")
 
-				add(tmp_url, row.Source)
+				add(tmp_url, row.Source, row.Origin)
 
 				if !strings.HasSuffix(tmp_url, "/") {
-					add(tmp_url+"/", row.Source)
+					add(tmp_url+"/", row.Source, row.Origin)
 				}
 
 				for _, ext := range extensions {
@@ -583,7 +629,7 @@ func GenerateTargets(ctx context.Context, urls []PhishUrls, wordlist []string, e
 					if strings.HasSuffix(guess, "/."+ext) || strings.Count(guess, "/") < 3 {
 						continue
 					}
-					add(guess, row.Source)
+					add(guess, row.Source, row.Origin)
 				}
 
 				dirBase := tmp_url
@@ -595,7 +641,7 @@ func GenerateTargets(ctx context.Context, urls []PhishUrls, wordlist []string, e
 				}
 				for _, word := range wordlist {
 					for _, ext := range extensions {
-						add(dirBase+word+"."+ext, row.Source)
+						add(dirBase+word+"."+ext, row.Source, row.Origin)
 					}
 				}
 			}
