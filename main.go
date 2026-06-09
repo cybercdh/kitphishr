@@ -39,6 +39,8 @@ var (
 	progressInterval time.Duration
 	scanTimeout      time.Duration
 	forceFeeds       bool
+	emitKitJSON      bool
+	kitJSONBrands    []BrandSignature
 	idx              *Index
 
 	seenKitURLsMu sync.Mutex
@@ -128,6 +130,7 @@ func main() {
 	flag.DurationVar(&scanTimeout, "timeout", 0, "max total scan duration (e.g. 30m, 1h); 0 = no limit. Workers drain gracefully when the deadline fires so partial captures survive.")
 	flag.BoolVar(&forceFeeds, "feeds", false, "always fetch URLs from the built-in threat-intel feeds (overrides stdin / TTY auto-detection; needed for scheduled / containerised runs)")
 	flag.StringVar(&knownHashesPath, "known-hashes", "", "path to a file of sha256 strings (one per line) to pre-seed the dedup index. Captures whose content matches a known sha get a dedup record in index.jsonl but are NOT saved to disk again. Used for cross-run dedup so repeated scans don't re-store the same kit.")
+	flag.BoolVar(&emitKitJSON, "kit-json", false, "for each saved kit, also write <sha>.kit.json next to it (capture metadata + analysis) for event-driven ingestion. Requires -d.")
 	flag.Parse()
 
 	scanStart := time.Now()
@@ -166,6 +169,16 @@ func main() {
 		if err := os.MkdirAll(defaultOutputDir, os.ModePerm); err != nil {
 			fmt.Fprintf(os.Stderr, "There was an error creating the output directory: %s\n", err)
 			os.Exit(1)
+		}
+		// Load brand signatures once up front when emitting per-kit JSON, so the
+		// on-save analyse path doesn't re-load them for every kit.
+		if emitKitJSON {
+			b, berr := LoadBrandSignatures("")
+			if berr != nil {
+				fmt.Fprintf(os.Stderr, "failed to load brand signatures for -kit-json: %s\n", berr)
+				os.Exit(1)
+			}
+			kitJSONBrands = b
 		}
 		indexPath := filepath.Join(defaultOutputDir, "index.jsonl")
 		var err error

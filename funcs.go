@@ -1088,5 +1088,50 @@ func (r Response) SaveResponse(idx *Index, outputDir string) (savedPath string, 
 	if err := idx.Record(rec); err != nil {
 		return target, false, err
 	}
+	if emitKitJSON {
+		writeKitJSON(rec, target, outputDir)
+	}
 	return target, false, nil
+}
+
+// writeKitJSON analyses a freshly-saved kit and writes a per-kit
+// <sha>.kit.json next to it: the capture metadata (from the index record)
+// merged with the kitphishr-analyze output. This is the at-capture record the
+// event-driven ingestion pipeline consumes. Best-effort — errors are logged to
+// stderr, never fatal to the scan.
+func writeKitJSON(rec IndexRecord, savedPath, outputDir string) {
+	ar := AnalyzePath(savedPath, kitJSONBrands)
+	b, err := json.Marshal(ar)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "kit-json: marshal %s: %s\n", rec.SHA256, err)
+		return
+	}
+	m := map[string]any{}
+	if err := json.Unmarshal(b, &m); err != nil {
+		fmt.Fprintf(os.Stderr, "kit-json: remap %s: %s\n", rec.SHA256, err)
+		return
+	}
+	// the analyser's local path is meaningless downstream; capture metadata wins.
+	delete(m, "path")
+	m["sha256"] = rec.SHA256
+	m["ts"] = rec.Timestamp
+	m["url"] = rec.URL
+	if rec.Source != "" {
+		m["source"] = rec.Source
+	}
+	if rec.ContentType != "" {
+		m["content_type"] = rec.ContentType
+	}
+	if rec.Size > 0 {
+		m["size"] = rec.Size
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "kit-json: encode %s: %s\n", rec.SHA256, err)
+		return
+	}
+	kitPath := path.Join(outputDir, rec.SHA256+".kit.json")
+	if err := os.WriteFile(kitPath, out, 0640); err != nil {
+		fmt.Fprintf(os.Stderr, "kit-json: write %s: %s\n", kitPath, err)
+	}
 }
