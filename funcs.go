@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"bufio"
 	"bytes"
 	"context"
@@ -881,6 +882,25 @@ func probeLooksArchiveShaped(r Response) bool {
 	ct := strings.ToLower(r.ContentType)
 	for _, sig := range archiveContentTypeSignals {
 		if strings.Contains(ct, sig) {
+			return true
+		}
+	}
+	return false
+}
+
+// validZipBody reports whether body parses as a zip archive containing at
+// least one file entry. Status + Content-Type alone aren't trustworthy:
+// some hosts (e.g. IPFS gateways) answer every *.zip path with 200 +
+// application/zip and a tiny constant error body, which we then catalogued
+// as a "kit". Parsing the central directory rejects those, along with HTML
+// error pages served as octet-stream and empty (entry-less) archives.
+func validZipBody(body []byte) bool {
+	zr, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
+	if err != nil {
+		return false
+	}
+	for _, f := range zr.File {
+		if !f.FileInfo().IsDir() {
 			return true
 		}
 	}

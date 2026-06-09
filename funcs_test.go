@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -790,4 +791,57 @@ func equalStringSlices(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func TestValidZipBody(t *testing.T) {
+	// A real zip with one file entry.
+	var real bytes.Buffer
+	zw := zip.NewWriter(&real)
+	w, err := zw.Create("kit/index.php")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte("<?php // phish ?>")); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// A structurally valid but entry-less zip (bare end-of-central-directory).
+	var empty bytes.Buffer
+	if err := zip.NewWriter(&empty).Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// A zip whose only entry is a directory.
+	var dirOnly bytes.Buffer
+	zw = zip.NewWriter(&dirOnly)
+	if _, err := zw.Create("kit/"); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name string
+		body []byte
+		want bool
+	}{
+		{"real zip", real.Bytes(), true},
+		{"empty body", nil, false},
+		// The ipfs.best-practice.se gateway answers every *.zip path with
+		// 200 + application/zip and a tiny constant text body like this.
+		{"gateway error text", []byte("invalid ipfs path: invalid path"), false},
+		{"html error page", []byte("<html><body>404</body></html>"), false},
+		{"entry-less zip", empty.Bytes(), false},
+		{"directory-only zip", dirOnly.Bytes(), false},
+		{"truncated zip", real.Bytes()[:20], false},
+	}
+	for _, tc := range cases {
+		if got := validZipBody(tc.body); got != tc.want {
+			t.Errorf("%s: validZipBody = %v, want %v", tc.name, got, tc.want)
+		}
+	}
 }

@@ -383,7 +383,7 @@ func handleResponse(ctx context.Context, client *http.Client, limiter *hostRateL
 	}
 
 	if strings.HasSuffix(resp.URL, ".zip") {
-		if len(resp.Body) > 0 && resp.ContentLength > 0 && resp.ContentLength < MAX_DOWNLOAD_SIZE && (strings.Contains(strings.ToLower(resp.ContentType), "zip") || strings.Contains(strings.ToLower(resp.ContentType), "octet-stream")) {
+		if len(resp.Body) > 0 && resp.ContentLength > 0 && resp.ContentLength < MAX_DOWNLOAD_SIZE && (strings.Contains(strings.ToLower(resp.ContentType), "zip") || strings.Contains(strings.ToLower(resp.ContentType), "octet-stream")) && validZipBody(resp.Body) {
 			if !claimKitURL(resp.URL) {
 				return
 			}
@@ -434,7 +434,7 @@ func handleResponse(ctx context.Context, client *http.Client, limiter *hostRateL
 			}
 			continue
 		}
-		if len(fetched.Body) == 0 {
+		if !validZipBody(fetched.Body) {
 			continue
 		}
 		select {
