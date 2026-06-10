@@ -845,3 +845,42 @@ func TestValidZipBody(t *testing.T) {
 		}
 	}
 }
+
+func TestWriteCaptureJSON(t *testing.T) {
+	dir := t.TempDir()
+	rec := IndexRecord{
+		Timestamp:   "2026-06-10T12:00:00Z",
+		URL:         "https://example.com/kit.zip",
+		SHA256:      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Size:        1234,
+		ContentType: "application/zip",
+		Source:      "feed",
+		SavedPath:   dir + "/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.zip",
+	}
+	writeCaptureJSON(rec, dir)
+
+	b, err := os.ReadFile(dir + "/" + rec.SHA256 + ".capture.json")
+	if err != nil {
+		t.Fatalf("capture.json not written: %s", err)
+	}
+	var got IndexRecord
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("capture.json not valid JSON: %s", err)
+	}
+	if got.URL != rec.URL || got.SHA256 != rec.SHA256 || got.Size != rec.Size || got.Source != rec.Source {
+		t.Errorf("capture metadata mismatch: %+v", got)
+	}
+	// saved_path must be the bare filename — the analyzer uses it to find the
+	// sibling archive object; a local directory path would be wrong downstream.
+	if got.SavedPath != rec.SHA256+".zip" {
+		t.Errorf("saved_path = %q, want bare basename %q", got.SavedPath, rec.SHA256+".zip")
+	}
+	// no analysis fields may sneak in: capture.json is meta-only by contract.
+	var raw map[string]any
+	_ = json.Unmarshal(b, &raw)
+	for _, k := range []string{"brands", "authors", "file_names", "files_scanned"} {
+		if _, ok := raw[k]; ok {
+			t.Errorf("capture.json must not contain analysis field %q", k)
+		}
+	}
+}

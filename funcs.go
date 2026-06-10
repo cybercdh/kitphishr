@@ -1157,7 +1157,30 @@ func (r Response) SaveResponse(idx *Index, outputDir string) (savedPath string, 
 	if emitKitJSON {
 		writeKitJSON(rec, target, outputDir)
 	}
+	if emitCaptureJSON {
+		writeCaptureJSON(rec, outputDir)
+	}
 	return target, false, nil
+}
+
+// writeCaptureJSON writes a per-kit <sha>.capture.json next to a freshly-saved
+// kit: the capture metadata only, no analysis. A downstream analyzer (the
+// per-kit Lambda) joins this with the archive itself to produce the
+// <sha>.kit.json the ingestion pipeline consumes — keeping analysis CPU out of
+// the scan task. saved_path is reduced to its basename: the local directory is
+// meaningless downstream, but the filename tells the analyzer which sibling
+// object is the archive. Best-effort — errors are logged, never fatal.
+func writeCaptureJSON(rec IndexRecord, outputDir string) {
+	rec.SavedPath = path.Base(rec.SavedPath)
+	out, err := json.Marshal(rec)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "capture-json: encode %s: %s\n", rec.SHA256, err)
+		return
+	}
+	capPath := path.Join(outputDir, rec.SHA256+".capture.json")
+	if err := os.WriteFile(capPath, out, 0640); err != nil {
+		fmt.Fprintf(os.Stderr, "capture-json: write %s: %s\n", capPath, err)
+	}
 }
 
 // writeKitJSON analyses a freshly-saved kit and writes a per-kit
