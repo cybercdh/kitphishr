@@ -42,6 +42,7 @@ var (
 	emitKitJSON      bool
 	emitCaptureJSON  bool
 	blockInternal    bool
+	sourceOverride   string
 	kitJSONBrands    []BrandSignature
 	scannedURLsPath  string
 	idx              *Index
@@ -142,6 +143,7 @@ func main() {
 	flag.BoolVar(&emitKitJSON, "kit-json", false, "for each saved kit, also write <sha>.kit.json next to it (capture metadata + analysis) for event-driven ingestion. Requires -d.")
 	flag.BoolVar(&emitCaptureJSON, "capture-json", false, "for each saved kit, also write <sha>.capture.json next to it (capture metadata ONLY, no analysis) so analysis can run elsewhere (e.g. an event-driven analyzer). Requires -d.")
 	flag.BoolVar(&blockInternal, "block-internal", false, "SSRF guard: resolve every target (and every redirect hop) and refuse to connect to any non-globally-routable address (loopback, RFC1918, link-local/IMDS, CGNAT, etc). For scanning untrusted/user-submitted URLs.")
+	flag.StringVar(&sourceOverride, "source", "", "override the recorded source label for every captured kit this run (default: the feed name, or \"stdin\"). Used to tag the provenance of on-demand scans, e.g. a user submission.")
 	flag.StringVar(&scannedURLsPath, "scanned-urls", "", "path to a file of feed URLs (one per line) scanned within the dedup window. Matching feed URLs are skipped (not re-explored/re-probed) this run, and the URLs actually probed are written to <output-dir>/scanned-urls.txt. Used for cross-run scan dedup so we don't re-hammer hosts already exhausted recently.")
 	flag.Parse()
 
@@ -313,6 +315,14 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "There was an error getting URLs from feeds.\n")
 		os.Exit(3)
+	}
+
+	// -source overrides the per-URL feed/stdin annotation so on-demand scans can
+	// record their provenance (e.g. a user submission) instead of "stdin".
+	if sourceOverride != "" {
+		for i := range input {
+			input[i].Source = sourceOverride
+		}
 	}
 
 	// Cross-run scan dedup: drop feed URLs scanned within the dedup window, and
