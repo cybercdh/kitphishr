@@ -65,8 +65,8 @@ Identical kits captured at different URLs are deduplicated by SHA256 — one fil
 | `-t <int>` | `45` | connection timeout in seconds |
 | `-v` | off | verbose: log every URL attempt |
 | `-u <string>` | (Chrome 131) | User-Agent header |
-| `-rps <float>` | `2.0` | per-host requests per second |
-| `-burst <int>` | `4` | per-host burst capacity |
+| `-rps <float>` | `10.0` | per-host request rate limit (requests per second; `0` = unlimited) |
+| `-burst <int>` | `20` | per-host burst capacity for the rate limiter |
 | `-wordlist <path>` | (built-in) | archive-name wordlist; pass `/dev/null` to disable wordlist guessing |
 | `-extensions <list>` | `zip` | archive extensions to guess (e.g. `zip,tar.gz,rar,7z`) |
 | `-feeds` | off | always fetch URLs from the built-in threat-intel feeds (for scheduled / containerised runs with no stdin) |
@@ -74,7 +74,10 @@ Identical kits captured at different URLs are deduplicated by SHA256 — one fil
 | `-timeout <dur>` | `0` (none) | max total scan duration; workers drain gracefully on deadline so partial captures survive |
 | `-known-hashes <path>` | (none) | file of sha256s (one per line) to pre-seed the dedup index; matching captures get a dedup record but are not re-saved (cross-run capture dedup) |
 | `-kit-json` | off | for each saved kit, also write `<sha>.kit.json` (capture metadata + analysis) for event-driven ingestion (requires `-d`) |
+| `-capture-json` | off | for each saved kit, also write `<sha>.capture.json` (capture metadata **only**, no analysis) so analysis can run elsewhere, e.g. an event-driven analyzer (requires `-d`) |
 | `-scanned-urls <path>` | (none) | file of feed URLs (one per line) scanned within the dedup window; matching feed URLs are skipped (not re-explored/re-probed), and the URLs actually probed are written to `<output-dir>/scanned-urls.txt` (cross-run scan dedup) |
+| `-block-internal` | off | SSRF guard: resolve every target (and every redirect hop) and refuse to connect to any non-globally-routable address (loopback, RFC1918, link-local/IMDS, CGNAT, etc). Use when scanning untrusted / user-submitted URLs |
+| `-source <string>` | (feed name / `stdin`) | override the recorded source label for every kit captured this run; tags the provenance of on-demand scans (e.g. a user submission) |
 
 ### `kitphishr analyze`
 
