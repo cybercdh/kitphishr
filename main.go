@@ -41,6 +41,7 @@ var (
 	forceFeeds       bool
 	emitKitJSON      bool
 	emitCaptureJSON  bool
+	blockInternal    bool
 	kitJSONBrands    []BrandSignature
 	scannedURLsPath  string
 	idx              *Index
@@ -140,6 +141,7 @@ func main() {
 	flag.StringVar(&knownHashesPath, "known-hashes", "", "path to a file of sha256 strings (one per line) to pre-seed the dedup index. Captures whose content matches a known sha get a dedup record in index.jsonl but are NOT saved to disk again. Used for cross-run dedup so repeated scans don't re-store the same kit.")
 	flag.BoolVar(&emitKitJSON, "kit-json", false, "for each saved kit, also write <sha>.kit.json next to it (capture metadata + analysis) for event-driven ingestion. Requires -d.")
 	flag.BoolVar(&emitCaptureJSON, "capture-json", false, "for each saved kit, also write <sha>.capture.json next to it (capture metadata ONLY, no analysis) so analysis can run elsewhere (e.g. an event-driven analyzer). Requires -d.")
+	flag.BoolVar(&blockInternal, "block-internal", false, "SSRF guard: resolve every target (and every redirect hop) and refuse to connect to any non-globally-routable address (loopback, RFC1918, link-local/IMDS, CGNAT, etc). For scanning untrusted/user-submitted URLs.")
 	flag.StringVar(&scannedURLsPath, "scanned-urls", "", "path to a file of feed URLs (one per line) scanned within the dedup window. Matching feed URLs are skipped (not re-explored/re-probed) this run, and the URLs actually probed are written to <output-dir>/scanned-urls.txt. Used for cross-run scan dedup so we don't re-hammer hosts already exhausted recently.")
 	flag.Parse()
 
@@ -172,7 +174,7 @@ func main() {
 
 	go runProgress(ctx, progressInterval, scanStart, progressDone)
 
-	client := MakeClient(to)
+	client := MakeClient(to, blockInternal)
 	limiter := newHostRateLimiter(rps, burst)
 
 	if downloadKits {

@@ -746,8 +746,15 @@ func looksLikeOpenDir(doc *goquery.Document, contentType string) bool {
 make an http client.
 allow redirects, skip ssl warnings, set timeouts.
 */
-func MakeClient(timeoutSecs int) *http.Client {
+func MakeClient(timeoutSecs int, blockInternal bool) *http.Client {
 	proxyURL := http.ProxyFromEnvironment
+	timeout := time.Second * time.Duration(timeoutSecs)
+	dial := (&net.Dialer{Timeout: timeout}).DialContext
+	if blockInternal {
+		// Swap in the SSRF-guarding dialer. net/http calls DialContext for the
+		// initial request and every redirect hop, so this covers redirects too.
+		dial = guardedDialContext(timeout)
+	}
 	tr := &http.Transport{
 		Proxy:           proxyURL,
 		MaxConnsPerHost: 50,
@@ -755,13 +762,11 @@ func MakeClient(timeoutSecs int) *http.Client {
 			InsecureSkipVerify: true,
 			Renegotiation:      tls.RenegotiateOnceAsClient,
 		},
-		DialContext: (&net.Dialer{
-			Timeout: time.Second * time.Duration(timeoutSecs),
-		}).DialContext,
+		DialContext: dial,
 	}
 	return &http.Client{
 		Transport: tr,
-		Timeout:   time.Second * time.Duration(timeoutSecs),
+		Timeout:   timeout,
 	}
 }
 

@@ -479,7 +479,7 @@ func TestIntegration_FetchAndSaveZip(t *testing.T) {
 	ua = defaultUserAgent
 
 	ctx := context.Background()
-	client := MakeClient(10)
+	client := MakeClient(10, false)
 	limiter := newHostRateLimiter(50, 50) // permissive in tests
 
 	t.Run("direct zip fetch", func(t *testing.T) {
@@ -705,7 +705,7 @@ func TestDeadHostShortCircuit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	client := MakeClient(5)
+	client := MakeClient(5, false)
 	limiter := newHostRateLimiter(50, 50)
 
 	// RFC 6761 reserves the .invalid TLD as guaranteed-NXDOMAIN.
