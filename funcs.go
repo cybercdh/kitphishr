@@ -368,7 +368,7 @@ func GetPhishURLsFromManyFeeds() ([]PhishUrls, error) {
 	fetchFns := []fetchFn{
 		getPhishTankURLs,
 		getOpenPhishURLs,
-		getNewLinksToday,
+		getPhishingDatabaseLinks,
 		getPhishStatsInfo,
 		getTweetFeedURLs,
 	}
@@ -452,8 +452,11 @@ func getPhishTankURLs() ([]PhishUrls, error) {
 	return urls, nil
 }
 
-func getNewLinksToday() ([]PhishUrls, error) {
-	phishfeed := "https://raw.githubusercontent.com/mitchellkrogza/Phishing.Database/master/phishing-links-NEW-today.txt"
+func getPhishingDatabaseLinks() ([]PhishUrls, error) {
+	// Phishing.Database's currently-active full-link feed. (The old
+	// phishing-links-NEW-today.txt was abandoned in Dec 2025 when the project
+	// moved to domain feeds; this ACTIVE set is still maintained.)
+	phishfeed := "https://raw.githubusercontent.com/Phishing-Database/Phishing.Database/master/phishing-links-ACTIVE/phishing-links-ACTIVE1.txt"
 	res, err := http.Get(phishfeed)
 	if err != nil {
 		return []PhishUrls{}, err
