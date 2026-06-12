@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -43,6 +44,7 @@ var (
 	emitCaptureJSON  bool
 	blockInternal    bool
 	sourceOverride   string
+	dumpTargets      bool
 	kitJSONBrands    []BrandSignature
 	scannedURLsPath  string
 	idx              *Index
@@ -144,6 +146,7 @@ func main() {
 	flag.BoolVar(&emitCaptureJSON, "capture-json", false, "for each saved kit, also write <sha>.capture.json next to it (capture metadata ONLY, no analysis) so analysis can run elsewhere (e.g. an event-driven analyzer). Requires -d.")
 	flag.BoolVar(&blockInternal, "block-internal", false, "SSRF guard: resolve every target (and every redirect hop) and refuse to connect to any non-globally-routable address (loopback, RFC1918, link-local/IMDS, CGNAT, etc). For scanning untrusted/user-submitted URLs.")
 	flag.StringVar(&sourceOverride, "source", "", "override the recorded source label for every captured kit this run (default: the feed name, or \"stdin\"). Used to tag the provenance of on-demand scans, e.g. a user submission.")
+	flag.BoolVar(&dumpTargets, "dump-targets", false, "fetch the feed/stdin target URLs, print them to stdout (one per line), and exit WITHOUT scanning. For external dedup/orchestration (e.g. look the URLs up in a store before scanning).")
 	flag.StringVar(&scannedURLsPath, "scanned-urls", "", "path to a file of feed URLs (one per line) scanned within the dedup window. Matching feed URLs are skipped (not re-explored/re-probed) this run, and the URLs actually probed are written to <output-dir>/scanned-urls.txt. Used for cross-run scan dedup so we don't re-hammer hosts already exhausted recently.")
 	flag.Parse()
 
@@ -323,6 +326,19 @@ func main() {
 		for i := range input {
 			input[i].Source = sourceOverride
 		}
+	}
+
+	// -dump-targets: print the acquired target URLs and exit. Lets an external
+	// orchestrator dedup against its own store (e.g. a DynamoDB lookup keyed by
+	// these URLs) before deciding what to actually scan — without re-implementing
+	// feed parsing. No scan, no output dir, no network probing.
+	if dumpTargets {
+		w := bufio.NewWriter(os.Stdout)
+		for _, row := range input {
+			fmt.Fprintln(w, row.URL)
+		}
+		w.Flush()
+		os.Exit(0)
 	}
 
 	// Cross-run scan dedup: drop feed URLs scanned within the dedup window, and
