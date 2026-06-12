@@ -53,21 +53,23 @@ var (
 
 // AnalyzeResult is the JSONL record emitted for each kit analysed.
 type AnalyzeResult struct {
-	Path            string     `json:"path"`
-	SHA256          string     `json:"sha256,omitempty"`
-	Size            int64      `json:"size,omitempty"`
-	FilesScanned    int        `json:"files_scanned"`
-	FileNames       []string   `json:"file_names,omitempty"`
-	Brands          []BrandHit `json:"brands,omitempty"`
-	Authors         []string   `json:"authors,omitempty"`
-	ICQHandles      []string   `json:"icq_handles,omitempty"`
-	SkypeHandles    []string   `json:"skype_handles,omitempty"`
-	MailDrops       []string   `json:"mail_drops,omitempty"`
-	Emails          []string   `json:"emails,omitempty"`
-	TelegramBots    []string   `json:"telegram_bots,omitempty"`
-	TelegramChatIDs []string   `json:"telegram_chat_ids,omitempty"`
-	DiscordWebhooks []string   `json:"discord_webhooks,omitempty"`
-	Errors          []string   `json:"errors,omitempty"`
+	Path            string        `json:"path"`
+	SHA256          string        `json:"sha256,omitempty"`
+	Size            int64         `json:"size,omitempty"`
+	FilesScanned    int           `json:"files_scanned"`
+	FileNames       []string      `json:"file_names,omitempty"`
+	Brands          []BrandHit    `json:"brands,omitempty"`
+	Authors         []string      `json:"authors,omitempty"`
+	ICQHandles      []string      `json:"icq_handles,omitempty"`
+	SkypeHandles    []string      `json:"skype_handles,omitempty"`
+	MailDrops       []string      `json:"mail_drops,omitempty"`
+	Emails          []string      `json:"emails,omitempty"`
+	TelegramBots    []string      `json:"telegram_bots,omitempty"`
+	TelegramChatIDs []string      `json:"telegram_chat_ids,omitempty"`
+	DiscordWebhooks []string      `json:"discord_webhooks,omitempty"`
+	HasBackdoor     bool          `json:"has_backdoor,omitempty"`
+	Backdoors       []BackdoorHit `json:"backdoors,omitempty"`
+	Errors          []string      `json:"errors,omitempty"`
 }
 
 // runAnalyze is the entry point for `kitphishr analyze`.
@@ -146,7 +148,7 @@ func AnalyzePath(path string, brands []BrandSignature) AnalyzeResult {
 	}
 	// treat as a single file
 	acc := newAnalyzer(brands)
-	if err := scanFile(path, acc); err != nil {
+	if err := scanFile(path, filepath.Base(path), acc); err != nil {
 		r.Errors = append(r.Errors, err.Error())
 	}
 	r.FilesScanned = 1
@@ -195,6 +197,7 @@ func analyzeZip(path string, r AnalyzeResult, brands []BrandSignature) AnalyzeRe
 			continue
 		}
 		acc.scan(data)
+		acc.scanBackdoors(f.Name, data)
 		scanned++
 	}
 	r.FilesScanned = scanned
@@ -216,12 +219,11 @@ func analyzeDir(path string, r AnalyzeResult, brands []BrandSignature) AnalyzeRe
 		}
 		// Store path relative to the kit root so it doesn't leak local
 		// filesystem layout (e.g. /Users/cdh/kits/abc/index.php -> abc/index.php).
-		rel, relErr := filepath.Rel(path, p)
-		if relErr == nil && rel != "" {
-			acc.recordFile(rel)
-		} else {
-			acc.recordFile(p)
+		name := p
+		if rel, relErr := filepath.Rel(path, p); relErr == nil && rel != "" {
+			name = rel
 		}
+		acc.recordFile(name)
 		if !relevantPath(p) {
 			return nil
 		}
@@ -232,7 +234,7 @@ func analyzeDir(path string, r AnalyzeResult, brands []BrandSignature) AnalyzeRe
 		if info.Size() > maxAnalyzeFileSize {
 			return nil
 		}
-		if err := scanFile(p, acc); err == nil {
+		if err := scanFile(p, name, acc); err == nil {
 			scanned++
 		}
 		return nil
@@ -268,6 +270,9 @@ type analyzer struct {
 	// archiveName is the basename of the .zip the kit came in as (or "")
 	// for a directory walk.
 	archiveName string
+	// Suspected backdoor callsites, deduped per file+line+kind. See backdoor.go.
+	backdoors    []BackdoorHit
+	backdoorSeen map[string]struct{}
 }
 
 func newAnalyzer(brands []BrandSignature) *analyzer {
@@ -284,6 +289,7 @@ func newAnalyzer(brands []BrandSignature) *analyzer {
 		brands:           brands,
 		brandHits:        make(map[string]int),
 		brandContentHits: make(map[string]int),
+		backdoorSeen:     make(map[string]struct{}),
 	}
 }
 
@@ -372,7 +378,7 @@ func looksLikePlaceholderEmail(e string) bool {
 
 // --- helpers ---
 
-func scanFile(path string, acc *analyzer) error {
+func scanFile(path, name string, acc *analyzer) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -386,6 +392,7 @@ func scanFile(path string, acc *analyzer) error {
 		return nil
 	}
 	acc.scan(data)
+	acc.scanBackdoors(name, data)
 	return nil
 }
 
@@ -419,6 +426,8 @@ func finalise(r AnalyzeResult, a *analyzer) AnalyzeResult {
 	r.TelegramChatIDs = sortedKeys(a.tgChats)
 	r.DiscordWebhooks = sortedKeys(a.discords)
 	r.FileNames = sortedKeys(a.fileNames)
+	r.Backdoors = finaliseBackdoors(a)
+	r.HasBackdoor = len(r.Backdoors) > 0
 	return r
 }
 
