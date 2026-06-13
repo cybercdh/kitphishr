@@ -134,7 +134,7 @@ func scanBrandsInto(lowered []byte, brands []BrandSignature, hits map[string]int
 	}
 	for _, b := range brands {
 		for _, kw := range b.Keywords {
-			if n := bytes.Count(lowered, []byte(kw)); n > 0 {
+			if n := countLeftBounded(lowered, []byte(kw)); n > 0 {
 				hits[b.Name] += n * weight
 			}
 		}
@@ -157,7 +157,7 @@ func scanBrandsForName(name string, brands []BrandSignature, hits map[string]int
 	for _, b := range brands {
 		// keyword pass (URLs, distinctive phrases)
 		for _, kw := range b.Keywords {
-			if n := bytes.Count(lowered, []byte(kw)); n > 0 {
+			if n := countLeftBounded(lowered, []byte(kw)); n > 0 {
 				hits[b.Name] += n * weight
 			}
 		}
@@ -243,6 +243,32 @@ func containsToken(haystack, token []byte) bool {
 // interior); everything else (., -, _, /, space, etc.) is a boundary.
 func isWordByte(c byte) bool {
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+}
+
+// countLeftBounded counts occurrences of token in haystack whose LEFT edge is a
+// word boundary (start-of-string or a non-alphanumeric char). Used for the
+// brand KEYWORD passes: a left boundary rejects "ing.com" inside "shopping.com"
+// / "booking.com" while still matching "www.ing.com" and concatenated phishing
+// domains like "paypalsecure-login.com" (keyword "paypal" at a dot/start). The
+// right edge is intentionally unbounded so suffix concatenation still scores.
+// Both args must be lowercased.
+func countLeftBounded(haystack, token []byte) int {
+	if len(token) == 0 {
+		return 0
+	}
+	count := 0
+	for from := 0; from < len(haystack); {
+		i := bytes.Index(haystack[from:], token)
+		if i < 0 {
+			break
+		}
+		i += from
+		if i == 0 || !isWordByte(haystack[i-1]) {
+			count++
+		}
+		from = i + 1
+	}
+	return count
 }
 
 // finaliseBrandHits applies the minimum-hits threshold and sorts the

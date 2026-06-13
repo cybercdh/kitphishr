@@ -266,3 +266,26 @@ func TestBareNameTokenBoundary(t *testing.T) {
 		t.Errorf("'ing-login.php' should match ING")
 	}
 }
+
+// Keyword matches must have a left word-boundary: "ing.com" inside
+// "shopping.com" must not score ING, but real domains and concatenated
+// phishing domains still match.
+func TestKeywordLeftBoundary(t *testing.T) {
+	brands := []BrandSignature{
+		{Name: "ING", Keywords: []string{"ing.com"}},
+		{Name: "PayPal", Keywords: []string{"paypal"}},
+	}
+	check := func(content string, brand string, want bool) {
+		h := map[string]int{}
+		scanBrandsInto([]byte(content), brands, h, 1)
+		got := h[brand] > 0
+		if got != want {
+			t.Errorf("content %q brand %s: got hit=%v want %v (hits=%d)", content, brand, got, want, h[brand])
+		}
+	}
+	check("visit https://shopping.com/cart now", "ING", false)  // substring → no
+	check("buy on booking.com today", "ING", false)             // substring → no
+	check("login at https://www.ing.com/personal", "ING", true) // real domain → yes
+	check("phish at paypalsecure-login.com", "PayPal", true)    // concatenated → yes (left boundary at dot)
+	check("not a brand: mypaypalx", "PayPal", false)            // mid-word → no
+}
