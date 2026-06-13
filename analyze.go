@@ -196,7 +196,7 @@ func analyzeZip(path string, r AnalyzeResult, brands []BrandSignature) AnalyzeRe
 		if int64(len(data)) > maxAnalyzeFileSize {
 			continue
 		}
-		acc.scan(data)
+		acc.scanNamed(f.Name, data)
 		acc.scanBackdoors(f.Name, data)
 		scanned++
 	}
@@ -324,13 +324,20 @@ func (a *analyzer) recordArchiveName(name string) {
 	}
 }
 
+// scan is the unnamed entry point (kept for tests / single-buffer callers);
+// content from an unknown path is treated as non-vendored.
 func (a *analyzer) scan(content []byte) {
-	for _, m := range emailIndicatorPattern.FindAll(content, -1) {
-		e := strings.ToLower(string(m))
-		if !looksLikePlaceholderEmail(e) {
-			a.emails[e] = struct{}{}
-		}
-	}
+	a.scanNamed("", content)
+}
+
+// scanNamed extracts indicators from one file's content. High-specificity and
+// sink-based scans (telegram/discord tokens, mail-exfil recipients) run on EVERY
+// file — including vendored libraries — so a disguised exfil channel squirreled
+// into e.g. PHPMailer/language/*.php is still caught. The broad bare-string
+// scans (any-email, author/ICQ/Skype handles, brand-in-content) are skipped for
+// vendored library files, whose translator emails / maintainer names / incidental
+// brand mentions are pure false positives, not kit IOCs.
+func (a *analyzer) scanNamed(name string, content []byte) {
 	for _, m := range telegramBotPattern.FindAll(content, -1) {
 		a.tgBots[string(m)] = struct{}{}
 	}
@@ -342,13 +349,44 @@ func (a *analyzer) scan(content []byte) {
 	for _, m := range discordWebhookPattern.FindAll(content, -1) {
 		a.discords[string(m)] = struct{}{}
 	}
-	scanAuthorsInto(content, a.authors, a.icqs, a.skypes)
 	scanMailDropsInto(content, a.mailDrops)
+
+	if isVendoredPath(name) {
+		return // skip the noisy bare-string scans for vendored library files
+	}
+
+	for _, m := range emailIndicatorPattern.FindAll(content, -1) {
+		e := strings.ToLower(string(m))
+		if !looksLikePlaceholderEmail(e) {
+			a.emails[e] = struct{}{}
+		}
+	}
+	scanAuthorsInto(content, a.authors, a.icqs, a.skypes)
 	if len(a.brands) > 0 {
 		lowered := bytes.ToLower(content)
 		scanBrandsInto(lowered, a.brands, a.brandHits, 1)
 		scanBrandsInto(lowered, a.brands, a.brandContentHits, 1)
 	}
+}
+
+// vendorMarkers are path segments of bundled third-party libraries. Their
+// contents are not kit IOCs (translator emails, maintainer names, etc.); only
+// the kit's OWN files are scanned for bare-string indicators. Keep in sync with
+// bedrock_analyze.py::_VENDOR_MARKERS (the SLM file-selection skip list).
+var vendorMarkers = []string{
+	"/phpmailer/", "/vendor/", "/node_modules/",
+	"/swiftmailer/", "/phpunit/", "/composer/",
+}
+
+// isVendoredPath reports whether name lives under a bundled-library directory.
+func isVendoredPath(name string) bool {
+	p := "/" + strings.ToLower(filepath.ToSlash(name))
+	for _, m := range vendorMarkers {
+		if strings.Contains(p, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // looksLikePlaceholderEmail filters obvious tutorial/template addresses.
@@ -391,7 +429,7 @@ func scanFile(path, name string, acc *analyzer) error {
 	if int64(len(data)) > maxAnalyzeFileSize {
 		return nil
 	}
-	acc.scan(data)
+	acc.scanNamed(name, data)
 	acc.scanBackdoors(name, data)
 	return nil
 }
