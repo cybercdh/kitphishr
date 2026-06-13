@@ -162,9 +162,12 @@ func scanBrandsForName(name string, brands []BrandSignature, hits map[string]int
 			}
 		}
 		// bare-name pass — only on filenames, never content, to avoid
-		// "google" in a stack trace polluting unrelated kits' scores
+		// "google" in a stack trace polluting unrelated kits' scores.
+		// Token-boundary match (not raw substring): a short brand name like
+		// "ING"/"UPS"/"IRS" must appear as its own token — "ing-login.php"
+		// matches, but "single"/"loading"/"shipping" do NOT.
 		bare := []byte(strings.ToLower(b.Name))
-		if len(bare) >= 3 && bytes.Contains(lowered, bare) {
+		if len(bare) >= 3 && containsToken(lowered, bare) {
 			hits[b.Name] += weight
 		}
 	}
@@ -173,11 +176,11 @@ func scanBrandsForName(name string, brands []BrandSignature, hits map[string]int
 // applyArchiveNameTiebreaker promotes a runner-up brand to primary when
 // the archive's filename mentions it. Guards against two failure modes:
 //
-//   1. Generic third-party assets (Google Fonts, reCAPTCHA, googleapis.com)
-//      outscore the kit's actual target — "NETFLIX_2K24.zip" is
-//      unambiguously Netflix even if .php files mention google more.
-//   2. A misleading or repurposed archive name overriding strong content —
-//      a Microsoft kit named "paypal_creds.zip" is still a Microsoft kit.
+//  1. Generic third-party assets (Google Fonts, reCAPTCHA, googleapis.com)
+//     outscore the kit's actual target — "NETFLIX_2K24.zip" is
+//     unambiguously Netflix even if .php files mention google more.
+//  2. A misleading or repurposed archive name overriding strong content —
+//     a Microsoft kit named "paypal_creds.zip" is still a Microsoft kit.
 //
 // Rule: swap only when the candidate has its own content support
 // (≥ minBrandHits from file content, not just from path/filename
@@ -193,7 +196,7 @@ func applyArchiveNameTiebreaker(brands []BrandHit, archiveName string, contentHi
 	for i := 1; i < len(brands); i++ {
 		candidate := brands[i]
 		bare := strings.ToLower(candidate.Name)
-		if len(bare) < 3 || !strings.Contains(lowered, bare) {
+		if len(bare) < 3 || !containsToken([]byte(lowered), []byte(bare)) {
 			continue
 		}
 		candContent := contentHits[candidate.Name]
@@ -207,6 +210,39 @@ func applyArchiveNameTiebreaker(brands []BrandHit, archiveName string, contentHi
 		return brands
 	}
 	return brands
+}
+
+// containsToken reports whether token appears in haystack delimited by
+// non-alphanumeric boundaries — so the brand name "ing" matches "ing.php" or
+// "ing-login" but NOT "single"/"loading"/"shipping". Both args must already be
+// lowercased. Used for the bare brand-NAME passes (filenames / archive name),
+// where a raw substring match of a short name produces rampant false positives;
+// the keyword passes stay as substring matches (their tokens are specific).
+func containsToken(haystack, token []byte) bool {
+	if len(token) == 0 {
+		return false
+	}
+	for from := 0; from < len(haystack); {
+		i := bytes.Index(haystack[from:], token)
+		if i < 0 {
+			return false
+		}
+		i += from
+		leftOK := i == 0 || !isWordByte(haystack[i-1])
+		end := i + len(token)
+		rightOK := end >= len(haystack) || !isWordByte(haystack[end])
+		if leftOK && rightOK {
+			return true
+		}
+		from = i + 1
+	}
+	return false
+}
+
+// isWordByte treats ASCII letters and digits as word characters (token
+// interior); everything else (., -, _, /, space, etc.) is a boundary.
+func isWordByte(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
 }
 
 // finaliseBrandHits applies the minimum-hits threshold and sorts the

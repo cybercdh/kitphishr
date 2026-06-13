@@ -248,3 +248,21 @@ func TestLoadBrandSignatures_FromFile(t *testing.T) {
 		t.Errorf("keywords not lowercased: %v", b[0].Keywords)
 	}
 }
+
+// Short brand names must match as whole tokens in filenames, not as substrings
+// of common words (the "single" contains "ing" → false ING bug).
+func TestBareNameTokenBoundary(t *testing.T) {
+	brands := []BrandSignature{{Name: "ING", Keywords: []string{"ing.com"}}}
+	// "single" inside a filename must NOT score ING
+	fp := map[string]int{}
+	scanBrandsForName("alibabaNew/image/simg_single_icon_favicon.ico", brands, fp, 3)
+	if fp["ING"] != 0 {
+		t.Errorf("'single' should not match ING, got %d", fp["ING"])
+	}
+	// a real ING token in a filename SHOULD score
+	tp := map[string]int{}
+	scanBrandsForName("ing-login.php", brands, tp, 3)
+	if tp["ING"] == 0 {
+		t.Errorf("'ing-login.php' should match ING")
+	}
+}
