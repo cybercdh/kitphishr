@@ -150,6 +150,37 @@ func WriteScannedURLs(path string, scanned map[string]struct{}) error {
 	return os.WriteFile(path, []byte(b.String()), 0640)
 }
 
+// ScanStats is the per-run effectiveness record: distinct feed URLs probed per
+// source feed, plus run totals. Synced to S3 alongside scanned-urls.txt and
+// joined with kits-captured-per-source for the source-effectiveness dashboard.
+type ScanStats struct {
+	TS           string         `json:"ts"`
+	ScannedTotal int            `json:"scanned_total"`
+	Found        int            `json:"found"`
+	Saved        int            `json:"saved"`
+	BySource     map[string]int `json:"by_source"`
+}
+
+// WriteScanStats writes the per-run scan-stats.json. bySource maps each source
+// feed to the count of distinct feed URLs probed from it this run.
+func WriteScanStats(path string, bySource map[string]int, scannedTotal, found, saved int) error {
+	if bySource == nil {
+		bySource = map[string]int{}
+	}
+	stats := ScanStats{
+		TS:           time.Now().UTC().Format(time.RFC3339),
+		ScannedTotal: scannedTotal,
+		Found:        found,
+		Saved:        saved,
+		BySource:     bySource,
+	}
+	data, err := json.Marshal(stats)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0640)
+}
+
 // LoadWordlist reads a wordlist file (one entry per line, '#' for comments,
 // blank lines ignored). An empty path returns the built-in default.
 func LoadWordlist(path string) ([]string, error) {

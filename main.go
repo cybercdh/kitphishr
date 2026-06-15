@@ -55,8 +55,11 @@ var (
 	// scanned records the feed URLs we actually probed this run, keyed by the
 	// origin (path-explosion root). Written out at the end for cross-run scan
 	// dedup so subsequent runs skip URLs already exhausted within the window.
-	scannedMu sync.Mutex
-	scanned   = make(map[string]struct{})
+	// sourceScanned counts those distinct probed feed URLs per source feed, for
+	// per-source effectiveness stats (scan-stats.json).
+	scannedMu     sync.Mutex
+	scanned       = make(map[string]struct{})
+	sourceScanned = make(map[string]int)
 
 	attemptedCount atomic.Uint64
 	foundCount     atomic.Uint64
@@ -238,7 +241,10 @@ func main() {
 				// looked) and a timed-out tail we never reached does not.
 				if target.Origin != "" {
 					scannedMu.Lock()
-					scanned[target.Origin] = struct{}{}
+					if _, exists := scanned[target.Origin]; !exists {
+						scanned[target.Origin] = struct{}{}
+						sourceScanned[target.Source]++
+					}
 					scannedMu.Unlock()
 				}
 				if verbose {
@@ -397,6 +403,20 @@ sendLoop:
 			fmt.Fprintf(os.Stderr, "warning: could not write scanned-urls.txt: %s\n", err)
 		} else if n > 0 {
 			fmt.Fprintf(os.Stderr, "scan-dedup: recorded %d probed feed URLs to scanned-urls.txt\n", n)
+		}
+
+		// Per-source effectiveness stats — distinct feed URLs probed per source,
+		// plus run totals. Joined downstream with kits-captured-per-source for the
+		// CloudWatch source-effectiveness dashboard. Best-effort.
+		scannedMu.Lock()
+		bySource := make(map[string]int, len(sourceScanned))
+		for s, c := range sourceScanned {
+			bySource[s] = c
+		}
+		scannedMu.Unlock()
+		if err := WriteScanStats(filepath.Join(defaultOutputDir, "scan-stats.json"),
+			bySource, int(attemptedCount.Load()), int(foundCount.Load()), int(savedCount.Load())); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not write scan-stats.json: %s\n", err)
 		}
 	}
 
