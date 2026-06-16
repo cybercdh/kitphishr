@@ -419,8 +419,8 @@ func GetPhishURLsFromManyFeeds() ([]PhishUrls, error) {
 
 	// NOTE on licensing: several of these feeds (PhishTank, OpenPhish free
 	// feed, PhishStats) restrict commercial use of their URL lists.
-	// TweetFeed is MIT-licensed and safe to use commercially. For a
-	// commercial deployment, prefer the commercial-safe subset.
+	// TweetFeed is CC0 1.0 (public domain) and safe to use commercially. For
+	// a commercial deployment, prefer the commercial-safe subset.
 	fetchFns := []fetchFn{
 		getPhishTankURLs,
 		getOpenPhishURLs,
@@ -599,14 +599,17 @@ func getPhishStatsInfo() ([]PhishUrls, error) {
 	return out, nil
 }
 
-// getTweetFeedURLs pulls today's CSV from 0xDanielLopez/TweetFeed, which
-// scrapes infosec tweets for IOCs. The CSV mixes types (url, domain,
-// sha256, ip); we keep only url-typed rows tagged with #phishing.
+// getTweetFeedURLs pulls the rolling 7-day CSV from 0xDanielLopez/TweetFeed,
+// which scrapes infosec tweets for IOCs. The CSV mixes types (url, domain,
+// sha256, ip); we keep url-typed rows tagged #phishing or #scam.
 //
-// License: MIT — safe for commercial use. Underlying tweets are author
-// content; their links are public.
+// week.csv (not today.csv): today.csv resets at 00:00 UTC, so a scan cadence
+// coarser than the reset window drops URLs added in the final pre-midnight
+// hours. The rolling week window is gap-free; cross-run dedup absorbs repeats.
+//
+// License: CC0 1.0 (public domain) — reuse freely, no attribution required.
 func getTweetFeedURLs() ([]PhishUrls, error) {
-	const feed = "https://raw.githubusercontent.com/0xDanielLopez/TweetFeed/master/today.csv"
+	const feed = "https://raw.githubusercontent.com/0xDanielLopez/TweetFeed/master/week.csv"
 	res, err := http.Get(feed)
 	if err != nil {
 		return []PhishUrls{}, err
@@ -638,7 +641,10 @@ func parseTweetFeedCSV(r io.Reader) ([]PhishUrls, error) {
 		if !strings.EqualFold(strings.TrimSpace(row[2]), "url") {
 			continue
 		}
-		if !strings.Contains(strings.ToLower(row[4]), "phishing") {
+		// #phishing or #scam — both are phishing-adjacent kit hosts. Skip
+		// #malware/#ransomware (different threat class, not kit archives).
+		tags := strings.ToLower(row[4])
+		if !strings.Contains(tags, "phishing") && !strings.Contains(tags, "scam") {
 			continue
 		}
 		u := strings.TrimSpace(row[3])
