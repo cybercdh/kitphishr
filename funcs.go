@@ -37,6 +37,29 @@ type PhishUrls struct {
 	// root). Internal only — used to record which feed URLs we actually probed
 	// for cross-run scan dedup. Not serialised.
 	Origin string `json:"-"`
+	// Intel is optional threat-feed metadata about the URL, carried from the
+	// feed through to capture.json so the analyzer can use it. nil for feeds
+	// that don't expose it. Rides alongside Source.
+	Intel *SourceIntel `json:"intel,omitempty"`
+}
+
+// SourceIntel is optional threat-feed metadata about the URL a kit was captured
+// from. Currently only PhishStats' JSON API populates it. It flows feed →
+// target → Response → IndexRecord → capture.json (provenance, like Source), and
+// the analyzer Lambda both feeds the semantic fields (title/tags/score) to the
+// SLM and persists the whole block in kit.json. All fields optional; a feed
+// fills what it has.
+type SourceIntel struct {
+	Feed         string   `json:"feed,omitempty"`          // feed that produced this intel
+	Score        *float64 `json:"score,omitempty"`         // feed's phishing-confidence score
+	Title        string   `json:"title,omitempty"`         // page <title> (often names the impersonated brand)
+	Tags         string   `json:"tags,omitempty"`          // feed-assigned tags
+	IP           string   `json:"ip,omitempty"`
+	ASN          string   `json:"asn,omitempty"`
+	ISP          string   `json:"isp,omitempty"`
+	CountryCode  string   `json:"country_code,omitempty"`
+	AbuseContact string   `json:"abuse_contact,omitempty"`
+	FirstSeen    string   `json:"first_seen,omitempty"` // feed's first-seen date for the URL
 }
 
 // kitArchiveNames is the built-in wordlist of common phishing-kit archive
@@ -230,6 +253,7 @@ type Response struct {
 	ContentLength int64
 	ContentType   string
 	Source        string
+	Intel         *SourceIntel
 }
 
 type IndexRecord struct {
@@ -237,10 +261,11 @@ type IndexRecord struct {
 	URL          string `json:"url"`
 	SHA256       string `json:"sha256"`
 	Size         int    `json:"size"`
-	ContentType  string `json:"content_type,omitempty"`
-	Source       string `json:"source,omitempty"`
-	SavedPath    string `json:"saved_path,omitempty"`
-	Deduplicated bool   `json:"deduplicated,omitempty"`
+	ContentType  string       `json:"content_type,omitempty"`
+	Source       string       `json:"source,omitempty"`
+	Intel        *SourceIntel `json:"intel,omitempty"`
+	SavedPath    string       `json:"saved_path,omitempty"`
+	Deduplicated bool         `json:"deduplicated,omitempty"`
 }
 
 type Index struct {
@@ -527,16 +552,45 @@ func getPhishStatsInfo() ([]PhishUrls, error) {
 		if err != nil {
 			break
 		}
+		// The API row is far richer than a bare URL — keep the fields that help
+		// the analyzer (title/tags/score for the SLM; ip/asn/isp/abuse_contact
+		// as provenance). Nullable fields (score, title, tags) decode to the
+		// zero value / nil when the API sends null.
 		var rows []struct {
-			URL string `json:"url"`
+			URL          string   `json:"url"`
+			IP           string   `json:"ip"`
+			ASN          string   `json:"asn"`
+			ISP          string   `json:"isp"`
+			CountryCode  string   `json:"countrycode"`
+			AbuseContact string   `json:"abuse_contact"`
+			Title        string   `json:"title"`
+			Tags         string   `json:"tags"`
+			Score        *float64 `json:"score"`
+			Date         string   `json:"date"`
 		}
 		if err := json.Unmarshal(body, &rows); err != nil {
 			break
 		}
 		for _, r := range rows {
-			if r.URL != "" {
-				out = append(out, PhishUrls{URL: r.URL, Source: "phishstats"})
+			if r.URL == "" {
+				continue
 			}
+			out = append(out, PhishUrls{
+				URL:    r.URL,
+				Source: "phishstats",
+				Intel: &SourceIntel{
+					Feed:         "phishstats",
+					Score:        r.Score,
+					Title:        r.Title,
+					Tags:         r.Tags,
+					IP:           r.IP,
+					ASN:          r.ASN,
+					ISP:          r.ISP,
+					CountryCode:  r.CountryCode,
+					AbuseContact: r.AbuseContact,
+					FirstSeen:    r.Date,
+				},
+			})
 		}
 		if len(rows) < 100 {
 			break // reached the end of the feed
@@ -650,7 +704,7 @@ func GenerateTargets(ctx context.Context, urls []PhishUrls, wordlist []string, e
 		// idle. Round-robin keeps every host's queue active in parallel.
 		hostQueues := make(map[string][]PhishUrls)
 		hostOrder := []string{}
-		add := func(u, source, origin string) {
+		add := func(u, source, origin string, intel *SourceIntel) {
 			if seen[u] {
 				return
 			}
@@ -659,7 +713,7 @@ func GenerateTargets(ctx context.Context, urls []PhishUrls, wordlist []string, e
 			if _, exists := hostQueues[h]; !exists {
 				hostOrder = append(hostOrder, h)
 			}
-			hostQueues[h] = append(hostQueues[h], PhishUrls{URL: u, Source: source, Origin: origin})
+			hostQueues[h] = append(hostQueues[h], PhishUrls{URL: u, Source: source, Origin: origin, Intel: intel})
 		}
 
 		for _, row := range urls {
@@ -672,10 +726,10 @@ func GenerateTargets(ctx context.Context, urls []PhishUrls, wordlist []string, e
 				_path := paths[:len(paths)-i]
 				tmp_url := u.Scheme + "://" + u.Host + strings.Join(_path, "/")
 
-				add(tmp_url, row.Source, row.Origin)
+				add(tmp_url, row.Source, row.Origin, row.Intel)
 
 				if !strings.HasSuffix(tmp_url, "/") {
-					add(tmp_url+"/", row.Source, row.Origin)
+					add(tmp_url+"/", row.Source, row.Origin, row.Intel)
 				}
 
 				for _, ext := range extensions {
@@ -683,7 +737,7 @@ func GenerateTargets(ctx context.Context, urls []PhishUrls, wordlist []string, e
 					if strings.HasSuffix(guess, "/."+ext) || strings.Count(guess, "/") < 3 {
 						continue
 					}
-					add(guess, row.Source, row.Origin)
+					add(guess, row.Source, row.Origin, row.Intel)
 				}
 
 				dirBase := tmp_url
@@ -695,7 +749,7 @@ func GenerateTargets(ctx context.Context, urls []PhishUrls, wordlist []string, e
 				}
 				for _, word := range wordlist {
 					for _, ext := range extensions {
-						add(dirBase+word+"."+ext, row.Source, row.Origin)
+						add(dirBase+word+"."+ext, row.Source, row.Origin, row.Intel)
 					}
 				}
 			}
@@ -887,6 +941,7 @@ func AttemptTarget(ctx context.Context, client *http.Client, limiter *hostRateLi
 			return Response{}, err
 		}
 		probe.Source = target.Source
+		probe.Intel = target.Intel
 		if !probeLooksArchiveShaped(probe) {
 			return probe, nil
 		}
@@ -899,6 +954,7 @@ func AttemptTarget(ctx context.Context, client *http.Client, limiter *hostRateLi
 			return Response{}, err
 		}
 		full.Source = target.Source
+		full.Intel = target.Intel
 		return full, nil
 	}
 
@@ -910,6 +966,7 @@ func AttemptTarget(ctx context.Context, client *http.Client, limiter *hostRateLi
 		return Response{}, err
 	}
 	resp.Source = target.Source
+	resp.Intel = target.Intel
 	return resp, nil
 }
 
@@ -1172,6 +1229,7 @@ func (r Response) SaveResponse(idx *Index, outputDir string) (savedPath string, 
 		Size:        len(r.Body),
 		ContentType: r.ContentType,
 		Source:      r.Source,
+		Intel:       r.Intel,
 	}
 
 	if existing := idx.SeenPath(sha); existing != "" {

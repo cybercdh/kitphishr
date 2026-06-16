@@ -483,7 +483,8 @@ func TestIntegration_FetchAndSaveZip(t *testing.T) {
 	limiter := newHostRateLimiter(50, 50) // permissive in tests
 
 	t.Run("direct zip fetch", func(t *testing.T) {
-		resp, err := AttemptTarget(ctx, client, limiter, PhishUrls{URL: srv.URL + "/kit.zip", Source: "test"})
+		intel := &SourceIntel{Feed: "test", Title: "Coinbase login", ASN: "AS1234"}
+		resp, err := AttemptTarget(ctx, client, limiter, PhishUrls{URL: srv.URL + "/kit.zip", Source: "test", Intel: intel})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -495,6 +496,9 @@ func TestIntegration_FetchAndSaveZip(t *testing.T) {
 		}
 		if resp.Source != "test" {
 			t.Errorf("source not propagated through fetch: %q", resp.Source)
+		}
+		if resp.Intel == nil || resp.Intel.Title != "Coinbase login" {
+			t.Errorf("intel not propagated through fetch: %+v", resp.Intel)
 		}
 	})
 
@@ -855,6 +859,7 @@ func TestWriteCaptureJSON(t *testing.T) {
 		Size:        1234,
 		ContentType: "application/zip",
 		Source:      "feed",
+		Intel:       &SourceIntel{Feed: "phishstats", Title: "PayPal", Tags: "database", AbuseContact: "abuse@example.com"},
 		SavedPath:   dir + "/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.zip",
 	}
 	writeCaptureJSON(rec, dir)
@@ -869,6 +874,10 @@ func TestWriteCaptureJSON(t *testing.T) {
 	}
 	if got.URL != rec.URL || got.SHA256 != rec.SHA256 || got.Size != rec.Size || got.Source != rec.Source {
 		t.Errorf("capture metadata mismatch: %+v", got)
+	}
+	// feed intel is provenance and must survive into capture.json
+	if got.Intel == nil || got.Intel.Title != "PayPal" || got.Intel.AbuseContact != "abuse@example.com" {
+		t.Errorf("source intel not preserved in capture.json: %+v", got.Intel)
 	}
 	// saved_path must be the bare filename — the analyzer uses it to find the
 	// sibling archive object; a local directory path would be wrong downstream.
