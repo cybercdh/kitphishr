@@ -44,22 +44,28 @@ type PhishUrls struct {
 }
 
 // SourceIntel is optional threat-feed metadata about the URL a kit was captured
-// from. Currently only PhishStats' JSON API populates it. It flows feed →
-// target → Response → IndexRecord → capture.json (provenance, like Source), and
-// the analyzer Lambda both feeds the semantic fields (title/tags/score) to the
-// SLM and persists the whole block in kit.json. All fields optional; a feed
-// fills what it has.
+// from. Populated by feeds that expose it (PhishStats, phishunt.io). It flows
+// feed → target → Response → IndexRecord → capture.json (provenance, like
+// Source), and the analyzer Lambda both feeds the semantic fields
+// (title/tags/score/brand) to the SLM and persists the whole block in kit.json.
+// All fields optional; a feed fills what it has.
 type SourceIntel struct {
-	Feed         string   `json:"feed,omitempty"`          // feed that produced this intel
-	Score        *float64 `json:"score,omitempty"`         // feed's phishing-confidence score
-	Title        string   `json:"title,omitempty"`         // page <title> (often names the impersonated brand)
-	Tags         string   `json:"tags,omitempty"`          // feed-assigned tags
+	Feed         string   `json:"feed,omitempty"`  // feed that produced this intel
+	Score        *float64 `json:"score,omitempty"` // feed's phishing-confidence score
+	Title        string   `json:"title,omitempty"` // page <title> (often names the impersonated brand)
+	Tags         string   `json:"tags,omitempty"`  // feed-assigned tags
+	Brand        string   `json:"brand,omitempty"` // feed-labelled impersonated brand (phishunt `company`)
 	IP           string   `json:"ip,omitempty"`
 	ASN          string   `json:"asn,omitempty"`
-	ISP          string   `json:"isp,omitempty"`
+	ISP          string   `json:"isp,omitempty"` // hosting provider / network operator (phishunt `org`)
 	CountryCode  string   `json:"country_code,omitempty"`
+	Cert         string   `json:"cert,omitempty"` // TLS cert issuer (e.g. "Let's Encrypt")
 	AbuseContact string   `json:"abuse_contact,omitempty"`
 	FirstSeen    string   `json:"first_seen,omitempty"` // feed's first-seen date for the URL
+	// Corroboration counts how many independent sources also flag this URL
+	// (phishunt's malicious_{google,openphish,phishtank,tweetfeed,urlscan}).
+	// nil when the feed doesn't provide cross-source signals.
+	Corroboration *int `json:"corroboration,omitempty"`
 }
 
 // kitArchiveNames is the built-in wordlist of common phishing-kit archive
@@ -257,10 +263,10 @@ type Response struct {
 }
 
 type IndexRecord struct {
-	Timestamp    string `json:"ts"`
-	URL          string `json:"url"`
-	SHA256       string `json:"sha256"`
-	Size         int    `json:"size"`
+	Timestamp    string       `json:"ts"`
+	URL          string       `json:"url"`
+	SHA256       string       `json:"sha256"`
+	Size         int          `json:"size"`
 	ContentType  string       `json:"content_type,omitempty"`
 	Source       string       `json:"source,omitempty"`
 	Intel        *SourceIntel `json:"intel,omitempty"`
@@ -426,6 +432,7 @@ func GetPhishURLsFromManyFeeds() ([]PhishUrls, error) {
 		getOpenPhishURLs,
 		getPhishingDatabaseLinks,
 		getPhishStatsInfo,
+		getPhishuntFeed,
 		getTweetFeedURLs,
 	}
 
@@ -599,6 +606,86 @@ func getPhishStatsInfo() ([]PhishUrls, error) {
 	return out, nil
 }
 
+// getPhishuntFeed pulls phishunt.io's live JSON feed (~300 active phishing
+// URLs). It's the richest feed we consume: each row carries a pre-labelled
+// brand (`company`), host infra (ip/asn/org/country/cert), and cross-source
+// detection flags (google/openphish/phishtank/tweetfeed/urlscan). We map all of
+// it into SourceIntel — `company`→Brand (a strong SLM brand hint), `org`→ISP,
+// and the malicious_* flags→Corroboration count (a confidence/prioritisation
+// signal). These are phishing SITE URLs, so normal path-explosion applies.
+//
+// phishunt is the upstream feeding 0xDanielLopez/phishing_kits — see
+// project-0xdaniel-intel-sources. JSON endpoint is feed.json (the /feed/
+// HTML page's ?format=json path 404s).
+func getPhishuntFeed() ([]PhishUrls, error) {
+	const feed = "https://phishunt.io/feed.json"
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	req, err := http.NewRequest("GET", feed, nil)
+	if err != nil {
+		return []PhishUrls{}, err
+	}
+	req.Header.Set("User-Agent", "kitphishr/1.0")
+	req.Header.Set("Accept", "application/json")
+	res, err := client.Do(req)
+	if err != nil {
+		return []PhishUrls{}, err
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		return []PhishUrls{}, err
+	}
+
+	var rows []struct {
+		URL          string `json:"url"`
+		Company      string `json:"company"`
+		FirstSeen    string `json:"first_seen"`
+		IP           string `json:"ip"`
+		Country      string `json:"country"`
+		ASN          string `json:"asn"`
+		Org          string `json:"org"`
+		Cert         string `json:"cert"`
+		MalGoogle    bool   `json:"malicious_google"`
+		MalOpenPhish bool   `json:"malicious_openphish"`
+		MalPhishTank bool   `json:"malicious_phishtank"`
+		MalTweetFeed bool   `json:"malicious_tweetfeed"`
+		MalURLScan   bool   `json:"malicious_urlscan"`
+	}
+	if err := json.Unmarshal(body, &rows); err != nil {
+		return []PhishUrls{}, err
+	}
+
+	out := make([]PhishUrls, 0, len(rows))
+	for _, r := range rows {
+		if r.URL == "" {
+			continue
+		}
+		corr := 0
+		for _, m := range []bool{r.MalGoogle, r.MalOpenPhish, r.MalPhishTank, r.MalTweetFeed, r.MalURLScan} {
+			if m {
+				corr++
+			}
+		}
+		out = append(out, PhishUrls{
+			URL:    r.URL,
+			Source: "phishunt",
+			Intel: &SourceIntel{
+				Feed:          "phishunt",
+				Brand:         r.Company,
+				IP:            r.IP,
+				ASN:           r.ASN,
+				ISP:           r.Org,
+				CountryCode:   r.Country,
+				Cert:          r.Cert,
+				FirstSeen:     r.FirstSeen,
+				Corroboration: &corr,
+			},
+		})
+	}
+	return out, nil
+}
+
 // getTweetFeedURLs pulls the rolling 7-day CSV from 0xDanielLopez/TweetFeed,
 // which scrapes infosec tweets for IOCs. The CSV mixes types (url, domain,
 // sha256, ip); we keep url-typed rows tagged #phishing or #scam.
@@ -621,7 +708,7 @@ func getTweetFeedURLs() ([]PhishUrls, error) {
 // parseTweetFeedCSV is split out so the filtering logic is unit-testable
 // without hitting the network. Expected format (6 columns):
 //
-//   date, user, type, value, tags, tweet_url
+//	date, user, type, value, tags, tweet_url
 //
 // We yield only rows where type == "url" and tags contains "phishing".
 func parseTweetFeedCSV(r io.Reader) ([]PhishUrls, error) {
