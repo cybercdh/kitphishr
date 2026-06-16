@@ -501,27 +501,46 @@ func getPhishingDatabaseLinks() ([]PhishUrls, error) {
 	return out, nil
 }
 
+// getPhishStatsInfo pulls the newest phishing URLs from PhishStats' JSON API.
+// The old phish_score.csv endpoint is gone (404); the maintained API at
+// api.phishstats.info returns JSON, capped at 100 rows/page, newest-first via
+// _sort=-id. We page through phishStatsPages to gather a few hundred fresh
+// URLs, stopping early on a short page or error. Dedup happens downstream.
 func getPhishStatsInfo() ([]PhishUrls, error) {
-	phishfeed := "https://phishstats.info/phish_score.csv"
+	const phishStatsPages = 5 // 100 rows/page → up to ~500 newest URLs
+
+	client := &http.Client{Timeout: 30 * time.Second}
 	out := make([]PhishUrls, 0)
-	res, err := http.Get(phishfeed)
-	if err != nil {
-		return []PhishUrls{}, err
-	}
-	defer res.Body.Close()
-	reader := csv.NewReader(res.Body)
-	reader.Comma = ','
-	reader.Comment = '#'
-	reader.FieldsPerRecord = -1
-	data, err := reader.ReadAll()
-	if err != nil {
-		return []PhishUrls{}, err
-	}
-	for _, row := range data {
-		if len(row) < 3 {
-			continue
+	for page := 1; page <= phishStatsPages; page++ {
+		feed := fmt.Sprintf("https://api.phishstats.info/api/phishing?_size=100&_sort=-id&_p=%d", page)
+		req, err := http.NewRequest("GET", feed, nil)
+		if err != nil {
+			break
 		}
-		out = append(out, PhishUrls{URL: row[2], Source: "phishstats"})
+		req.Header.Set("User-Agent", "kitphishr/1.0")
+		res, err := client.Do(req)
+		if err != nil {
+			break
+		}
+		body, err := io.ReadAll(res.Body)
+		res.Body.Close()
+		if err != nil {
+			break
+		}
+		var rows []struct {
+			URL string `json:"url"`
+		}
+		if err := json.Unmarshal(body, &rows); err != nil {
+			break
+		}
+		for _, r := range rows {
+			if r.URL != "" {
+				out = append(out, PhishUrls{URL: r.URL, Source: "phishstats"})
+			}
+		}
+		if len(rows) < 100 {
+			break // reached the end of the feed
+		}
 	}
 	return out, nil
 }
