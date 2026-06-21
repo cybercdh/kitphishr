@@ -27,6 +27,13 @@ const (
 	// per-kit file-count cap — guards against malicious zips containing
 	// huge numbers of small files.
 	maxAnalyzeFiles = 50000
+	// Nested-archive recursion: kits often ship a .zip inside the .zip (a
+	// second-stage payload, a bundled sub-kit). Recurse into them so their IOCs
+	// + filenames (incl. dropper extensions for malware classification) are
+	// analysed too. Bounded depth + a per-nested-zip size cap guard zip bombs;
+	// the global maxAnalyzeFiles/maxAnalyzeFileSize caps still apply throughout.
+	maxNestedDepth   = 3
+	maxNestedZipSize = 100 * 1024 * 1024
 )
 
 // relevantExtensions limits which files inside a kit we bother to scan.
@@ -166,18 +173,41 @@ func analyzeZip(path string, r AnalyzeResult, brands []BrandSignature) AnalyzeRe
 	acc := newAnalyzer(brands)
 	acc.recordArchiveName(filepath.Base(path))
 	scanned := 0
-	for _, f := range zr.File {
-		if scanned >= maxAnalyzeFiles {
+	scanZipEntries(zr.File, acc, "", 0, &scanned, &r)
+	r.FilesScanned = scanned
+	return finalise(r, acc)
+}
+
+// scanZipEntries walks a zip's entries into acc, recursing into nested .zip
+// members up to maxNestedDepth. `prefix` namespaces nested paths (a!/b.php) so
+// the recorded file list reflects the nesting. `scanned` is shared across all
+// levels so the global file-count cap bounds the whole tree.
+func scanZipEntries(files []*zip.File, acc *analyzer, prefix string, depth int, scanned *int, r *AnalyzeResult) {
+	for _, f := range files {
+		if *scanned >= maxAnalyzeFiles {
 			r.Errors = append(r.Errors, fmt.Sprintf("file count exceeded %d, stopping early", maxAnalyzeFiles))
-			break
+			return
 		}
 		if f.FileInfo().IsDir() {
 			continue
 		}
-		// Record EVERY file (incl. images / fonts / non-PHP). The
-		// indicator scan still only opens relevant extensions but the
-		// full file list is a fingerprint of the kit's shape.
-		acc.recordFile(f.Name)
+		name := prefix + f.Name
+		// Record EVERY file (incl. images / fonts / non-PHP, and nested-archive
+		// members). The full list is a fingerprint of the kit's shape and feeds
+		// dropper/malware classification downstream.
+		acc.recordFile(name)
+
+		// Nested archive: recurse into it (bounded). A bad/oversized nested zip
+		// just falls through to the normal per-file handling below.
+		if depth < maxNestedDepth &&
+			strings.HasSuffix(strings.ToLower(f.Name), ".zip") &&
+			f.UncompressedSize64 <= maxNestedZipSize {
+			if nf := openNestedZip(f); nf != nil {
+				scanZipEntries(nf, acc, name+"!/", depth+1, scanned, r)
+				continue
+			}
+		}
+
 		if !relevantPath(f.Name) {
 			continue
 		}
@@ -196,12 +226,30 @@ func analyzeZip(path string, r AnalyzeResult, brands []BrandSignature) AnalyzeRe
 		if int64(len(data)) > maxAnalyzeFileSize {
 			continue
 		}
-		acc.scanNamed(f.Name, data)
-		acc.scanBackdoors(f.Name, data)
-		scanned++
+		acc.scanNamed(name, data)
+		acc.scanBackdoors(name, data)
+		*scanned++
 	}
-	r.FilesScanned = scanned
-	return finalise(r, acc)
+}
+
+// openNestedZip reads a zip member fully into memory and reopens it as a zip.
+// Returns nil if it isn't a valid zip or can't be read (caller falls back to
+// treating it as an ordinary file).
+func openNestedZip(f *zip.File) []*zip.File {
+	rc, err := f.Open()
+	if err != nil {
+		return nil
+	}
+	data, err := io.ReadAll(io.LimitReader(rc, maxNestedZipSize+1))
+	rc.Close()
+	if err != nil || int64(len(data)) > maxNestedZipSize {
+		return nil
+	}
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return nil
+	}
+	return zr.File
 }
 
 func analyzeDir(path string, r AnalyzeResult, brands []BrandSignature) AnalyzeResult {

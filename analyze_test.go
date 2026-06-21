@@ -2,8 +2,10 @@ package main
 
 import (
 	"archive/zip"
+	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -194,5 +196,63 @@ func containsAll(t *testing.T, got []string, wants ...string) {
 		if !set[w] {
 			t.Errorf("expected %q in result, got: %v", w, got)
 		}
+	}
+}
+
+// buildTestZipBytes builds a zip from byte contents (so a nested zip can be a
+// member) and returns its path.
+func buildTestZipBytes(t *testing.T, files map[string][]byte) string {
+	t.Helper()
+	dir := t.TempDir()
+	p := filepath.Join(dir, "kit.zip")
+	f, err := os.Create(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	zw := zip.NewWriter(f)
+	for name, content := range files {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// A .zip nested inside the kit .zip must be recursed into: its IOCs are found
+// and its members (incl. a dropper extension) are recorded with a!/b paths.
+func TestAnalyzePath_NestedZip(t *testing.T) {
+	var inner bytes.Buffer
+	iw := zip.NewWriter(&inner)
+	php, _ := iw.Create("stage2/exfil.php")
+	php.Write([]byte(`<?php $bot="999888777:zzzzZZZZyyyyYYYYxxxxXXXXwwwwWWWWvvvv"; ?>`))
+	drop, _ := iw.Create("stage2/loader.vbs")
+	drop.Write([]byte("' second-stage dropper"))
+	iw.Close()
+
+	zipPath := buildTestZipBytes(t, map[string][]byte{
+		"index.html":  []byte("<html>login</html>"),
+		"payload.zip": inner.Bytes(),
+	})
+	r := AnalyzePath(zipPath, nil)
+
+	if len(r.TelegramBots) < 1 {
+		t.Errorf("nested zip's TG bot token should be found, got %v", r.TelegramBots)
+	}
+	foundVbs := false
+	for _, n := range r.FileNames {
+		if strings.Contains(n, "payload.zip!/") && strings.HasSuffix(n, "loader.vbs") {
+			foundVbs = true
+		}
+	}
+	if !foundVbs {
+		t.Errorf("nested .vbs should be recorded under payload.zip!/, got %v", r.FileNames)
 	}
 }
