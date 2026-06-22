@@ -432,7 +432,12 @@ func handleResponse(ctx context.Context, client *http.Client, limiter *hostRateL
 	}
 
 	if hasCaptureExtension(resp.URL) {
-		if len(resp.Body) > 0 && probeLooksArchiveShaped(resp) && validArchiveBody(resp.Body) {
+		// Gate on the BODY, not the headers: validArchiveBody is authoritative
+		// (parses the zip central directory / matches an archive magic), so a
+		// valid kit served chunked (no Content-Length) or with a wrong
+		// Content-Type is still saved. Size is bounded by the fetch's
+		// MAX_DOWNLOAD_SIZE LimitReader; reject a truncated oversize body.
+		if n := len(resp.Body); n > 0 && n <= MAX_DOWNLOAD_SIZE && validArchiveBody(resp.Body) {
 			if !claimKitURL(resp.URL) {
 				return
 			}

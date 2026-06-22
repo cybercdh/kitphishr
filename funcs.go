@@ -1114,10 +1114,10 @@ func AttemptTarget(ctx context.Context, client *http.Client, limiter *hostRateLi
 		}
 		probe.Source = target.Source
 		probe.Intel = target.Intel
-		if !probeLooksArchiveShaped(probe) {
+		if !shouldFetchAfterProbe(probe) {
 			return probe, nil
 		}
-		// looks zippy — do the GET
+		// archive-shaped or inconclusive — do the GET (bounded + body-validated)
 		if err := limiter.Wait(ctx, host); err != nil {
 			return Response{}, err
 		}
@@ -1159,20 +1159,44 @@ var archiveContentTypeSignals = []string{
 	"zip", "octet-stream", "tar", "gzip", "bzip", "rar", "7z",
 }
 
-func probeLooksArchiveShaped(r Response) bool {
+// shouldFetchAfterProbe decides whether to follow a HEAD probe with a GET. The
+// HEAD is a bandwidth optimisation, NOT a capture gate: it exists only to avoid
+// downloading an obvious HTML page or an advertised-oversize body. So it must
+// fail OPEN — we GET whenever the probe is archive-shaped OR inconclusive.
+// Inconclusive covers the cases that silently lost real kits: a non-200 HEAD
+// (405 Method Not Allowed, or a redirect hop whose final HEAD is unreliable —
+// e.g. http->https kit hosts), a missing Content-Length (chunked), or a
+// missing/blank Content-Type. A needless GET costs at most one MAX_DOWNLOAD_SIZE
+// download that validArchiveBody then rejects. We skip the GET only on a
+// confident disqualification: a 200 HEAD advertising a concrete non-archive
+// content type, or an advertised size over the cap.
+func shouldFetchAfterProbe(r Response) bool {
+	// HEAD blocked but GET often works: WAFs and HEAD-averse PHP hosts answer
+	// 403/405 to HEAD yet serve the archive on GET. Worth one bounded GET.
+	if r.StatusCode == http.StatusForbidden || r.StatusCode == http.StatusMethodNotAllowed {
+		return true
+	}
+	// Any other non-200 (404/410/5xx, or an unresolved redirect — the client
+	// already follows redirects, so a 3xx here is a dead end) is trusted as not
+	// fetchable. We skip it so we don't double requests on the many dead feed
+	// URLs (a HEAD AND a GET) for no gain.
 	if r.StatusCode != http.StatusOK {
 		return false
 	}
-	if r.ContentLength <= 0 || r.ContentLength > MAX_DOWNLOAD_SIZE {
-		return false
+	if r.ContentLength > MAX_DOWNLOAD_SIZE {
+		return false // advertised oversize — never storable
 	}
-	ct := strings.ToLower(r.ContentType)
+	// 200 with no/blank Content-Type is inconclusive — fetch to be sure.
+	ct := strings.ToLower(strings.TrimSpace(r.ContentType))
+	if ct == "" {
+		return true
+	}
 	for _, sig := range archiveContentTypeSignals {
 		if strings.Contains(ct, sig) {
-			return true
+			return true // archive-shaped (covers chunked: Content-Length is irrelevant here)
 		}
 	}
-	return false
+	return false // 200 with a concrete non-archive type (html/image/…) — skip the GET
 }
 
 // validZipBody reports whether body parses as a zip archive containing at

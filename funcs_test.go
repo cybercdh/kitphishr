@@ -197,28 +197,34 @@ func TestZipFromDir_NonHTMLContentType(t *testing.T) {
 	}
 }
 
-func TestProbeLooksArchiveShaped(t *testing.T) {
+func TestShouldFetchAfterProbe(t *testing.T) {
 	cases := []struct {
 		name string
 		r    Response
 		want bool
 	}{
-		{"ok zip", Response{StatusCode: 200, ContentLength: 1000, ContentType: "application/zip"}, true},
-		{"ok octet-stream", Response{StatusCode: 200, ContentLength: 1000, ContentType: "application/octet-stream"}, true},
-		{"ok x-zip", Response{StatusCode: 200, ContentLength: 1000, ContentType: "application/x-zip-compressed"}, true},
-		{"ok x-tar", Response{StatusCode: 200, ContentLength: 1000, ContentType: "application/x-tar"}, true},
-		{"ok gzip", Response{StatusCode: 200, ContentLength: 1000, ContentType: "application/gzip"}, true},
-		{"ok x-rar", Response{StatusCode: 200, ContentLength: 1000, ContentType: "application/x-rar-compressed"}, true},
-		{"ok x-7z", Response{StatusCode: 200, ContentLength: 1000, ContentType: "application/x-7z-compressed"}, true},
-		{"ok x-bzip2", Response{StatusCode: 200, ContentLength: 1000, ContentType: "application/x-bzip2"}, true},
-		{"not 200", Response{StatusCode: 404, ContentLength: 1000, ContentType: "application/zip"}, false},
-		{"zero length", Response{StatusCode: 200, ContentLength: 0, ContentType: "application/zip"}, false},
-		{"too big", Response{StatusCode: 200, ContentLength: MAX_DOWNLOAD_SIZE + 1, ContentType: "application/zip"}, false},
-		{"html", Response{StatusCode: 200, ContentLength: 1000, ContentType: "text/html"}, false},
+		// archive-shaped HEADs → fetch
+		{"zip", Response{StatusCode: 200, ContentLength: 1000, ContentType: "application/zip"}, true},
+		{"octet-stream", Response{StatusCode: 200, ContentLength: 1000, ContentType: "application/octet-stream"}, true},
+		{"x-rar", Response{StatusCode: 200, ContentLength: 1000, ContentType: "application/x-rar-compressed"}, true},
+		{"x-7z", Response{StatusCode: 200, ContentLength: 1000, ContentType: "application/x-7z-compressed"}, true},
+		// inconclusive / HEAD-blocked → fetch anyway (the cases that used to lose kits)
+		{"chunked zip (no content-length)", Response{StatusCode: 200, ContentLength: -1, ContentType: "application/zip"}, true},
+		{"archive type, zero length", Response{StatusCode: 200, ContentLength: 0, ContentType: "application/zip"}, true},
+		{"no content-type", Response{StatusCode: 200, ContentLength: 1000, ContentType: ""}, true},
+		{"blank content-type", Response{StatusCode: 200, ContentLength: -1, ContentType: "   "}, true},
+		{"HEAD not allowed (405)", Response{StatusCode: 405, ContentLength: -1, ContentType: ""}, true},
+		{"forbidden HEAD (403)", Response{StatusCode: 403, ContentLength: 0, ContentType: "text/html"}, true},
+		// confident disqualifications → skip the GET
+		{"200 html landing page", Response{StatusCode: 200, ContentLength: 1000, ContentType: "text/html"}, false},
+		{"200 image", Response{StatusCode: 200, ContentLength: 1000, ContentType: "image/png"}, false},
+		{"advertised oversize", Response{StatusCode: 200, ContentLength: MAX_DOWNLOAD_SIZE + 1, ContentType: "application/zip"}, false},
+		{"gone (404) — not fetchable", Response{StatusCode: 404, ContentLength: 0, ContentType: "text/html"}, false},
+		{"unresolved redirect (301)", Response{StatusCode: 301, ContentLength: 162, ContentType: "text/html"}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := probeLooksArchiveShaped(c.r); got != c.want {
+			if got := shouldFetchAfterProbe(c.r); got != c.want {
 				t.Errorf("got %v, want %v", got, c.want)
 			}
 		})
