@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -432,8 +431,8 @@ func handleResponse(ctx context.Context, client *http.Client, limiter *hostRateL
 		return
 	}
 
-	if strings.HasSuffix(resp.URL, ".zip") {
-		if len(resp.Body) > 0 && resp.ContentLength > 0 && resp.ContentLength < MAX_DOWNLOAD_SIZE && (strings.Contains(strings.ToLower(resp.ContentType), "zip") || strings.Contains(strings.ToLower(resp.ContentType), "octet-stream")) && validZipBody(resp.Body) {
+	if hasCaptureExtension(resp.URL) {
+		if len(resp.Body) > 0 && probeLooksArchiveShaped(resp) && validArchiveBody(resp.Body) {
 			if !claimKitURL(resp.URL) {
 				return
 			}
@@ -484,7 +483,7 @@ func handleResponse(ctx context.Context, client *http.Client, limiter *hostRateL
 			}
 			continue
 		}
-		if !validZipBody(fetched.Body) {
+		if !validArchiveBody(fetched.Body) {
 			continue
 		}
 		select {

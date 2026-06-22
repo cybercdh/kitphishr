@@ -102,6 +102,32 @@ func hasArchiveExtension(s string) bool {
 	return false
 }
 
+// captureArchiveExts is the subset of archive types a live scan will SAVE.
+// It is narrower than archiveRecognitionExts (which governs what we *spot* in
+// open dirs): every entry here must be both routable to a sha-named object by
+// extensionFromURL AND wired to the analyzer's S3 trigger — keep in sync with
+// the suffix list in kitphishr-infra/lib/ingestion-stack.ts. We deliberately
+// omit bz2/xz/tbz2/txz: the analyzer isn't triggered for them, so capturing
+// one would leave an un-analysed orphan in the bucket. (.tar.gz is covered by
+// the .gz suffix; .gz/.tgz/.rar/.7z get a degraded single-file analysis until
+// extraction support lands, which still beats dropping the kit.)
+var captureArchiveExts = []string{".zip", ".gz", ".rar", ".7z", ".tgz"}
+
+// hasCaptureExtension reports whether a URL ends in an extension we capture
+// (query string stripped). Gate for saving a fetched archive.
+func hasCaptureExtension(s string) bool {
+	s = strings.ToLower(s)
+	if i := strings.Index(s, "?"); i >= 0 {
+		s = s[:i]
+	}
+	for _, ext := range captureArchiveExts {
+		if strings.HasSuffix(s, ext) {
+			return true
+		}
+	}
+	return false
+}
+
 // LoadKnownHashes reads a file of sha256 strings, one per line, with '#'
 // for comments. Used to seed the in-memory dedup index with hashes
 // captured by prior scans (cross-run dedup). Returns nil for empty path.
@@ -1162,6 +1188,32 @@ func validZipBody(body []byte) bool {
 	}
 	for _, f := range zr.File {
 		if !f.FileInfo().IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+// archiveMagics are the leading byte signatures of the non-zip archive families
+// captureArchiveExts admits. Zips get the stronger validZipBody parse; for the
+// rest a signature match is enough to do validZipBody's job — keep HTML/error
+// pages served as application/octet-stream out of the catalogue.
+var archiveMagics = [][]byte{
+	{0x52, 0x61, 0x72, 0x21, 0x1A, 0x07}, // RAR ("Rar!\x1a\x07", v4 and v5)
+	{0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C}, // 7z  ("7z\xBC\xAF'\x1C")
+	{0x1F, 0x8B},                         // gzip (.gz / .tar.gz / .tgz)
+}
+
+// validArchiveBody reports whether body is a recognised archive: a parseable
+// zip, or a known non-zip signature. Generalises validZipBody across every
+// format captureArchiveExts admits, so a .rar/.7z/.tgz with a real archive body
+// is saved while a stub/HTML body is still rejected.
+func validArchiveBody(body []byte) bool {
+	if validZipBody(body) {
+		return true
+	}
+	for _, m := range archiveMagics {
+		if len(body) >= len(m) && bytes.Equal(body[:len(m)], m) {
 			return true
 		}
 	}

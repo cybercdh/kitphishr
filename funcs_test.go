@@ -850,6 +850,67 @@ func TestValidZipBody(t *testing.T) {
 	}
 }
 
+func TestValidArchiveBody(t *testing.T) {
+	// A real zip with one file entry (reuses the validZipBody path).
+	var realZip bytes.Buffer
+	zw := zip.NewWriter(&realZip)
+	w, err := zw.Create("kit/index.php")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte("<?php // phish ?>")); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name string
+		body []byte
+		want bool
+	}{
+		{"real zip", realZip.Bytes(), true},
+		{"rar v4/v5 magic", []byte("Rar!\x1a\x07\x00somerardata"), true},
+		{"7z magic", []byte("7z\xBC\xAF\x27\x1Cmore7zdata"), true},
+		{"gzip magic (.gz/.tgz/.tar.gz)", []byte("\x1f\x8b\x08\x00gzippeddata"), true},
+		{"html error page", []byte("<html><body>404</body></html>"), false},
+		{"octet-stream stub text", []byte("invalid path: not found"), false},
+		{"empty body", nil, false},
+		{"too short for magic", []byte("Rar"), false},
+	}
+	for _, tc := range cases {
+		if got := validArchiveBody(tc.body); got != tc.want {
+			t.Errorf("%s: validArchiveBody = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestHasCaptureExtension(t *testing.T) {
+	cases := []struct {
+		url  string
+		want bool
+	}{
+		{"https://host/root.zip", true},
+		{"https://host/htdocs.rar", true},
+		{"https://host/kit.7z", true},
+		{"https://host/kit.tar.gz", true}, // covered by the .gz suffix
+		{"https://host/kit.tgz", true},
+		{"https://host/kit.gz", true},
+		{"https://host/kit.zip?ver=2", true}, // query stripped
+		{"https://host/KIT.ZIP", true},       // case-insensitive
+		{"https://host/kit.bz2", false},      // analyzer not wired → not captured
+		{"https://host/kit.tar.xz", false},
+		{"https://host/index.php", false},
+		{"https://host/", false},
+	}
+	for _, tc := range cases {
+		if got := hasCaptureExtension(tc.url); got != tc.want {
+			t.Errorf("hasCaptureExtension(%q) = %v, want %v", tc.url, got, tc.want)
+		}
+	}
+}
+
 func TestWriteCaptureJSON(t *testing.T) {
 	dir := t.TempDir()
 	rec := IndexRecord{
