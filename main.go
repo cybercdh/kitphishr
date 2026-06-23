@@ -130,6 +130,13 @@ func main() {
 		return
 	}
 
+	// `kitphishr transcode <in.rar|in.7z> <out.zip>` re-emits a rar/7z archive
+	// as a zip so the zip-only analyze/SLM path can process it.
+	if len(os.Args) >= 2 && os.Args[1] == "transcode" {
+		runTranscode(os.Args[2:])
+		return
+	}
+
 	flag.IntVar(&concurrency, "c", 50, "set the concurrency level")
 	flag.IntVar(&to, "t", 45, "set the connection timeout in seconds (useful to ensure the download of large files)")
 	flag.BoolVar(&verbose, "v", false, "get more info on URL attempts")
