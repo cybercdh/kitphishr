@@ -94,7 +94,7 @@ kitphishr pulls candidate URLs from the open-source phishing feeds below. Each f
 | `-kit-json` | off | for each saved kit, also write `<sha>.kit.json` (capture metadata + analysis) for event-driven ingestion (requires `-d`) |
 | `-capture-json` | off | for each saved kit, also write `<sha>.capture.json` (capture metadata **only**, no analysis) so analysis can run elsewhere, e.g. an event-driven analyzer (requires `-d`) |
 | `-scanned-urls <path>` | (none) | file of feed URLs (one per line) scanned within the dedup window; matching feed URLs are skipped (not re-explored/re-probed), and the URLs actually probed are written to `<output-dir>/scanned-urls.txt` (cross-run scan dedup) |
-| `-block-internal` | off | SSRF guard: resolve every target (and every redirect hop) and refuse to connect to any non-globally-routable address (loopback, RFC1918, link-local/IMDS, CGNAT, etc). Use when scanning untrusted / user-submitted URLs |
+| `-block-internal` | **on** | SSRF guard: resolve every target (and every redirect hop) and refuse to connect to any non-globally-routable address (loopback, RFC1918, link-local/IMDS, CGNAT, etc). On by default; pass `-block-internal=false` to allow internal targets (e.g. scanning a trusted lab) |
 | `-source <string>` | (feed name / `stdin`) | override the recorded source label for every kit captured this run; tags the provenance of on-demand scans (e.g. a user submission) |
 
 ### `kitphishr analyze`
