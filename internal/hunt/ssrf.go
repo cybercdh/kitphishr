@@ -25,16 +25,16 @@ import (
 // by the helpers in isGlobalIP).
 var extraBlockedCIDRs = func() []*net.IPNet {
 	cidrs := []string{
-		"100.64.0.0/10",  // RFC 6598 carrier-grade NAT
-		"192.0.0.0/24",   // RFC 6890 IETF protocol assignments
-		"192.0.2.0/24",   // TEST-NET-1
-		"198.18.0.0/15",  // RFC 2544 benchmarking
+		"100.64.0.0/10",   // RFC 6598 carrier-grade NAT
+		"192.0.0.0/24",    // RFC 6890 IETF protocol assignments
+		"192.0.2.0/24",    // TEST-NET-1
+		"198.18.0.0/15",   // RFC 2544 benchmarking
 		"198.51.100.0/24", // TEST-NET-2
-		"203.0.113.0/24", // TEST-NET-3
-		"240.0.0.0/4",    // reserved / future use (incl. 255.255.255.255 broadcast)
-		"::/128",         // unspecified (also caught by IsUnspecified)
-		"64:ff9b::/96",   // NAT64 — embeds an IPv4 that may itself be private
-		"2001:db8::/32",  // documentation
+		"203.0.113.0/24",  // TEST-NET-3
+		"240.0.0.0/4",     // reserved / future use (incl. 255.255.255.255 broadcast)
+		"::/128",          // unspecified (also caught by IsUnspecified)
+		"64:ff9b::/96",    // NAT64 — embeds an IPv4 that may itself be private
+		"2001:db8::/32",   // documentation
 	}
 	out := make([]*net.IPNet, 0, len(cidrs))
 	for _, c := range cidrs {

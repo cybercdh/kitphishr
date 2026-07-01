@@ -13,20 +13,20 @@ import (
 func TestIsGlobalIP(t *testing.T) {
 	blocked := []string{
 		"127.0.0.1", "127.1.2.3", // loopback
-		"::1",                          // loopback v6
+		"::1",                                   // loopback v6
 		"10.0.0.1", "172.16.0.1", "192.168.1.1", // RFC1918
-		"169.254.169.254",     // link-local / IMDS
-		"fe80::1",             // link-local v6
-		"fc00::1", "fd00::1",  // ULA
-		"0.0.0.0", "::",       // unspecified
-		"100.64.0.1",          // CGNAT
-		"198.18.0.1",          // benchmarking
-		"192.0.2.5",           // TEST-NET-1
-		"255.255.255.255",     // broadcast (240/4)
-		"224.0.0.1",           // multicast
-		"::ffff:127.0.0.1",    // IPv4-mapped loopback
+		"169.254.169.254",    // link-local / IMDS
+		"fe80::1",            // link-local v6
+		"fc00::1", "fd00::1", // ULA
+		"0.0.0.0", "::", // unspecified
+		"100.64.0.1",             // CGNAT
+		"198.18.0.1",             // benchmarking
+		"192.0.2.5",              // TEST-NET-1
+		"255.255.255.255",        // broadcast (240/4)
+		"224.0.0.1",              // multicast
+		"::ffff:127.0.0.1",       // IPv4-mapped loopback
 		"::ffff:169.254.169.254", // IPv4-mapped IMDS
-		"::ffff:10.0.0.1",     // IPv4-mapped RFC1918
+		"::ffff:10.0.0.1",        // IPv4-mapped RFC1918
 	}
 	for _, s := range blocked {
 		ip := net.ParseIP(s)

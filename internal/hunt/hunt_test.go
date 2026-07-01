@@ -235,18 +235,18 @@ func TestShouldFetchAfterProbe(t *testing.T) {
 
 func TestHasArchiveExtension(t *testing.T) {
 	cases := map[string]bool{
-		"kit.zip":            true,
-		"kit.ZIP":            true,
-		"kit.tar.gz":         true,
-		"kit.tgz":            true,
-		"kit.tar.bz2":        true,
-		"kit.rar":            true,
-		"kit.7z":             true,
-		"kit.zip?v=1":        true,
-		"login.php":          false,
-		"readme.txt":         false,
-		"foo":                false,
-		"kit.zipper":         false,
+		"kit.zip":     true,
+		"kit.ZIP":     true,
+		"kit.tar.gz":  true,
+		"kit.tgz":     true,
+		"kit.tar.bz2": true,
+		"kit.rar":     true,
+		"kit.7z":      true,
+		"kit.zip?v=1": true,
+		"login.php":   false,
+		"readme.txt":  false,
+		"foo":         false,
+		"kit.zipper":  false,
 	}
 	for in, want := range cases {
 		if got := hasArchiveExtension(in); got != want {
