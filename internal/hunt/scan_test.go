@@ -1,4 +1,4 @@
-package main
+package hunt
 
 import "testing"
 
@@ -26,19 +26,16 @@ func TestResolveHref(t *testing.T) {
 	}
 }
 
-func TestClaimKitURL_DedupsWithinRun(t *testing.T) {
-	// Reset package-level map for test isolation.
-	seenKitURLsMu.Lock()
-	seenKitURLs = make(map[string]struct{})
-	seenKitURLsMu.Unlock()
+func TestScannerClaim_DedupsWithinRun(t *testing.T) {
+	s := NewScanner(nil, nil, false, false)
 
-	if !claimKitURL("http://x.com/kit.zip") {
+	if !s.claim("http://x.com/kit.zip") {
 		t.Error("first claim should succeed")
 	}
-	if claimKitURL("http://x.com/kit.zip") {
+	if s.claim("http://x.com/kit.zip") {
 		t.Error("second claim of same URL should fail")
 	}
-	if !claimKitURL("http://x.com/other.zip") {
+	if !s.claim("http://x.com/other.zip") {
 		t.Error("claim of different URL should succeed")
 	}
 }

@@ -6,8 +6,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -47,9 +45,6 @@ var (
 	scannedURLsPath  string
 	idx              *hunt.Index
 
-	seenKitURLsMu sync.Mutex
-	seenKitURLs   = make(map[string]struct{})
-
 	// scanned records the feed URLs we actually probed this run, keyed by the
 	// origin (path-explosion root). Written out at the end for cross-run scan
 	// dedup so subsequent runs skip URLs already exhausted within the window.
@@ -60,14 +55,13 @@ var (
 	sourceScanned = make(map[string]int)
 
 	attemptedCount atomic.Uint64
-	foundCount     atomic.Uint64
 	savedCount     atomic.Uint64
 )
 
 // runProgress prints a one-line stats summary to stderr every interval
 // until ctx is cancelled or done is closed. Useful for long unattended
 // scans where verbose mode would be noisy. Disabled when interval <= 0.
-func runProgress(ctx context.Context, interval time.Duration, start time.Time, done <-chan struct{}) {
+func runProgress(ctx context.Context, interval time.Duration, start time.Time, done <-chan struct{}, scanner *hunt.Scanner) {
 	if interval <= 0 {
 		return
 	}
@@ -87,38 +81,9 @@ func runProgress(ctx context.Context, interval time.Duration, start time.Time, d
 			lastAttempted = attempted
 			elapsed := time.Since(start).Round(time.Second)
 			fmt.Fprintf(os.Stderr, "[%s] scanned=%d found=%d saved=%d dead-hosts=%d | rate=%.1f/s\n",
-				elapsed, attempted, foundCount.Load(), savedCount.Load(), hunt.DeadHostCount(), rate)
+				elapsed, attempted, scanner.Found(), savedCount.Load(), hunt.DeadHostCount(), rate)
 		}
 	}
-}
-
-// claimKitURL atomically marks a kit URL as "we are handling this" and
-// returns true if this is the first claim. Used to prevent double-fetching
-// when the same kit URL is discoverable via multiple open-dir paths (e.g.
-// /uploads and /uploads/ both redirecting to the same listing).
-func claimKitURL(u string) bool {
-	seenKitURLsMu.Lock()
-	defer seenKitURLsMu.Unlock()
-	if _, ok := seenKitURLs[u]; ok {
-		return false
-	}
-	seenKitURLs[u] = struct{}{}
-	return true
-}
-
-// resolveHref converts an href found in an open-dir page into an absolute
-// URL relative to the page's URL. Handles relative ("kit.zip"),
-// absolute-path ("/files/kit.zip"), and absolute-URL hrefs.
-func resolveHref(base, href string) (string, bool) {
-	b, err := url.Parse(base)
-	if err != nil {
-		return "", false
-	}
-	h, err := url.Parse(href)
-	if err != nil {
-		return "", false
-	}
-	return b.ResolveReference(h).String(), true
 }
 
 func main() {
@@ -193,10 +158,11 @@ func main() {
 		}(scanTimeout)
 	}
 
-	go runProgress(ctx, progressInterval, scanStart, progressDone)
-
 	client := hunt.MakeClient(to, blockInternal)
 	limiter := hunt.NewHostRateLimiter(rps, burst)
+	scanner := hunt.NewScanner(client, limiter, verbose, downloadKits)
+
+	go runProgress(ctx, progressInterval, scanStart, progressDone, scanner)
 
 	if downloadKits {
 		if err := os.MkdirAll(defaultOutputDir, os.ModePerm); err != nil {
@@ -290,7 +256,7 @@ func main() {
 				if ctx.Err() != nil {
 					return
 				}
-				handleResponse(ctx, client, limiter, resp, tosave)
+				scanner.HandleResponse(ctx, resp, tosave)
 			}
 		}()
 	}
@@ -428,87 +394,12 @@ sendLoop:
 		}
 		scannedMu.Unlock()
 		if err := hunt.WriteScanStats(filepath.Join(defaultOutputDir, "scan-stats.json"),
-			bySource, int(attemptedCount.Load()), int(foundCount.Load()), int(savedCount.Load())); err != nil {
+			bySource, int(attemptedCount.Load()), int(scanner.Found()), int(savedCount.Load())); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not write scan-stats.json: %s\n", err)
 		}
 	}
 
 	fmt.Fprintf(os.Stderr, "Done. scanned=%d found=%d saved=%d dead-hosts=%d in %s\n",
-		attemptedCount.Load(), foundCount.Load(), savedCount.Load(), hunt.DeadHostCount(),
+		attemptedCount.Load(), scanner.Found(), savedCount.Load(), hunt.DeadHostCount(),
 		time.Since(scanStart).Round(time.Second))
-}
-
-// handleResponse classifies a fetch response: either it's a zip we should
-// save, or it's an open-directory page we should walk for zip links.
-func handleResponse(ctx context.Context, client *http.Client, limiter *hunt.HostRateLimiter, resp hunt.Response, tosave chan<- hunt.Response) {
-	if resp.StatusCode != http.StatusOK {
-		return
-	}
-
-	if hunt.HasCaptureExtension(resp.URL) {
-		// Gate on the BODY, not the headers: hunt.ValidArchiveBody is authoritative
-		// (parses the zip central directory / matches an archive magic), so a
-		// valid kit served chunked (no Content-Length) or with a wrong
-		// Content-Type is still saved. Size is bounded by the fetch's
-		// hunt.MAX_DOWNLOAD_SIZE LimitReader; reject a truncated oversize body.
-		if n := len(resp.Body); n > 0 && n <= hunt.MAX_DOWNLOAD_SIZE && hunt.ValidArchiveBody(resp.Body) {
-			if !claimKitURL(resp.URL) {
-				return
-			}
-			foundCount.Add(1)
-			if verbose {
-				color.Green.Printf("Zip found from URL folder at %s\n", resp.URL)
-			} else {
-				fmt.Println(resp.URL)
-			}
-			if downloadKits {
-				select {
-				case <-ctx.Done():
-				case tosave <- resp:
-				}
-			}
-			return
-		}
-	}
-
-	hrefs, err := hunt.ZipFromDir(resp)
-	if err != nil {
-		return
-	}
-	for _, href := range hrefs {
-		if href == "" {
-			continue
-		}
-		hurl, ok := resolveHref(resp.URL, href)
-		if !ok {
-			continue
-		}
-		if !claimKitURL(hurl) {
-			continue
-		}
-		foundCount.Add(1)
-		if verbose {
-			color.Green.Printf("Zip found from Open Directory at %s\n", hurl)
-		} else {
-			fmt.Println(hurl)
-		}
-		if !downloadKits {
-			continue
-		}
-		fetched, err := hunt.AttemptTarget(ctx, client, limiter, sources.PhishUrls{URL: hurl, Source: resp.Source})
-		if err != nil {
-			if verbose {
-				color.Red.Printf("error downloading %s: %s\n", hurl, err)
-			}
-			continue
-		}
-		if !hunt.ValidArchiveBody(fetched.Body) {
-			continue
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case tosave <- fetched:
-		}
-	}
 }
