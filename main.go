@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cybercdh/kitphishr/internal/sources"
 	"github.com/gookit/color"
 )
 
@@ -228,7 +229,7 @@ func main() {
 		}
 	}
 
-	targets := make(chan PhishUrls, concurrency)
+	targets := make(chan sources.PhishUrls, concurrency)
 	responses := make(chan Response, concurrency)
 	tosave := make(chan Response, concurrency)
 
@@ -488,7 +489,7 @@ func handleResponse(ctx context.Context, client *http.Client, limiter *hostRateL
 		if !downloadKits {
 			continue
 		}
-		fetched, err := AttemptTarget(ctx, client, limiter, PhishUrls{URL: hurl, Source: resp.Source})
+		fetched, err := AttemptTarget(ctx, client, limiter, sources.PhishUrls{URL: hurl, Source: resp.Source})
 		if err != nil {
 			if verbose {
 				color.Red.Printf("error downloading %s: %s\n", hurl, err)

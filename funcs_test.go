@@ -17,11 +17,13 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/cybercdh/kitphishr/internal/sources"
 )
 
 func TestGenerateTargets_PathTraversalAndZipGuess(t *testing.T) {
 	ctx := context.Background()
-	in := []PhishUrls{{URL: "http://example.com/foo/bar/login.php", Source: "stdin"}}
+	in := []sources.PhishUrls{{URL: "http://example.com/foo/bar/login.php", Source: "stdin"}}
 	ch := GenerateTargets(ctx, in, nil, []string{"zip"})
 
 	var got []string
@@ -54,7 +56,7 @@ func TestGenerateTargets_PathTraversalAndZipGuess(t *testing.T) {
 
 func TestGenerateTargets_SkipsRootZip(t *testing.T) {
 	ctx := context.Background()
-	in := []PhishUrls{{URL: "http://example.com/", Source: "x"}}
+	in := []sources.PhishUrls{{URL: "http://example.com/", Source: "x"}}
 	ch := GenerateTargets(ctx, in, nil, []string{"zip"})
 
 	for u := range ch {
@@ -69,7 +71,7 @@ func TestGenerateTargets_SkipsRootZip(t *testing.T) {
 
 func TestGenerateTargets_RespectsContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	in := []PhishUrls{{URL: "http://example.com/a/b/c", Source: "x"}}
+	in := []sources.PhishUrls{{URL: "http://example.com/a/b/c", Source: "x"}}
 	ch := GenerateTargets(ctx, in, nil, []string{"zip"})
 	cancel()
 	// drain — should close on its own without hanging
@@ -79,7 +81,7 @@ func TestGenerateTargets_RespectsContextCancellation(t *testing.T) {
 
 func TestGenerateTargets_Wordlist(t *testing.T) {
 	ctx := context.Background()
-	in := []PhishUrls{{URL: "http://example.com/foo/", Source: "stdin"}}
+	in := []sources.PhishUrls{{URL: "http://example.com/foo/", Source: "stdin"}}
 	ch := GenerateTargets(ctx, in, []string{"kit", "panel"}, []string{"zip"})
 
 	got := map[string]bool{}
@@ -102,7 +104,7 @@ func TestGenerateTargets_Wordlist(t *testing.T) {
 
 func TestGenerateTargets_MultipleExtensions(t *testing.T) {
 	ctx := context.Background()
-	in := []PhishUrls{{URL: "http://example.com/foo/", Source: "stdin"}}
+	in := []sources.PhishUrls{{URL: "http://example.com/foo/", Source: "stdin"}}
 	ch := GenerateTargets(ctx, in, []string{"kit"}, []string{"zip", "tar.gz", "rar"})
 
 	got := map[string]bool{}
@@ -125,7 +127,7 @@ func TestGenerateTargets_MultipleExtensions(t *testing.T) {
 
 func TestGenerateTargets_EmptyWordlistOnlyDoesPathGuesses(t *testing.T) {
 	ctx := context.Background()
-	in := []PhishUrls{{URL: "http://example.com/foo/", Source: "stdin"}}
+	in := []sources.PhishUrls{{URL: "http://example.com/foo/", Source: "stdin"}}
 	ch := GenerateTargets(ctx, in, nil, []string{"zip"})
 
 	for u := range ch {
@@ -489,8 +491,8 @@ func TestIntegration_FetchAndSaveZip(t *testing.T) {
 	limiter := newHostRateLimiter(50, 50) // permissive in tests
 
 	t.Run("direct zip fetch", func(t *testing.T) {
-		intel := &SourceIntel{Feed: "test", Title: "Coinbase login", ASN: "AS1234"}
-		resp, err := AttemptTarget(ctx, client, limiter, PhishUrls{URL: srv.URL + "/kit.zip", Source: "test", Intel: intel})
+		intel := &sources.SourceIntel{Feed: "test", Title: "Coinbase login", ASN: "AS1234"}
+		resp, err := AttemptTarget(ctx, client, limiter, sources.PhishUrls{URL: srv.URL + "/kit.zip", Source: "test", Intel: intel})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -509,7 +511,7 @@ func TestIntegration_FetchAndSaveZip(t *testing.T) {
 	})
 
 	t.Run("HEAD rejects non-zip masquerading as .zip", func(t *testing.T) {
-		resp, err := AttemptTarget(ctx, client, limiter, PhishUrls{URL: srv.URL + "/notazip.zip", Source: "test"})
+		resp, err := AttemptTarget(ctx, client, limiter, sources.PhishUrls{URL: srv.URL + "/notazip.zip", Source: "test"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -519,7 +521,7 @@ func TestIntegration_FetchAndSaveZip(t *testing.T) {
 	})
 
 	t.Run("open dir surfaces zip href", func(t *testing.T) {
-		resp, err := AttemptTarget(ctx, client, limiter, PhishUrls{URL: srv.URL + "/open/", Source: "test"})
+		resp, err := AttemptTarget(ctx, client, limiter, sources.PhishUrls{URL: srv.URL + "/open/", Source: "test"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -550,7 +552,7 @@ func TestIntegration_FetchAndSaveZip(t *testing.T) {
 		}))
 		defer redirSrv.Close()
 
-		resp, err := AttemptTarget(ctx, client, limiter, PhishUrls{URL: redirSrv.URL + "/uploads", Source: "test"})
+		resp, err := AttemptTarget(ctx, client, limiter, sources.PhishUrls{URL: redirSrv.URL + "/uploads", Source: "test"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -567,7 +569,7 @@ func TestIntegration_FetchAndSaveZip(t *testing.T) {
 		}
 		defer idx.Close()
 
-		resp, err := AttemptTarget(ctx, client, limiter, PhishUrls{URL: srv.URL + "/kit.zip", Source: "test"})
+		resp, err := AttemptTarget(ctx, client, limiter, sources.PhishUrls{URL: srv.URL + "/kit.zip", Source: "test"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -583,7 +585,7 @@ func TestIntegration_FetchAndSaveZip(t *testing.T) {
 		}
 
 		// fetch again from the open-dir path — same body, different URL
-		resp2, err := AttemptTarget(ctx, client, limiter, PhishUrls{URL: srv.URL + "/open/archive.zip", Source: "test"})
+		resp2, err := AttemptTarget(ctx, client, limiter, sources.PhishUrls{URL: srv.URL + "/open/archive.zip", Source: "test"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -653,7 +655,7 @@ func TestClaimKitURL_DedupsWithinRun(t *testing.T) {
 
 func TestGenerateTargets_InterleavesAcrossHosts(t *testing.T) {
 	ctx := context.Background()
-	in := []PhishUrls{
+	in := []sources.PhishUrls{
 		{URL: "http://a.example/path1", Source: "x"},
 		{URL: "http://b.example/path2", Source: "x"},
 		{URL: "http://c.example/path3", Source: "x"},
@@ -719,7 +721,7 @@ func TestDeadHostShortCircuit(t *testing.T) {
 	limiter := newHostRateLimiter(50, 50)
 
 	// RFC 6761 reserves the .invalid TLD as guaranteed-NXDOMAIN.
-	target := PhishUrls{URL: "http://kitphishr-deadhost-test.invalid/kit.zip", Source: "test"}
+	target := sources.PhishUrls{URL: "http://kitphishr-deadhost-test.invalid/kit.zip", Source: "test"}
 
 	// First call: should fail and mark host dead.
 	if _, err := AttemptTarget(ctx, client, limiter, target); err == nil {
@@ -759,37 +761,6 @@ func TestRetryable_DoesNotRetryUnreachable(t *testing.T) {
 		t.Error("DNS NXDOMAIN should not be retryable")
 	}
 }
-
-func TestParseTweetFeedCSV(t *testing.T) {
-	const sample = `2026-06-03 00:00:00,urldna_bot,domain,evil.example.com,#phishing #scam,https://x.com/urldna_bot/status/1
-2026-06-03 00:00:00,urldna_bot,url,https://evil.example.com/login,#phishing #scam,https://x.com/urldna_bot/status/1
-2026-06-03 01:17:00,user_a,sha256,abc123def,#APT,https://x.com/user_a/status/2
-2026-06-03 02:18:00,user_b,url,http://malware-not-phish.example.org,#malware,https://x.com/user_b/status/3
-2026-06-03 02:18:00,user_c,url,http://multi.example.net/page,#malware #phishing #campaign,https://x.com/user_c/status/4
-2026-06-03 02:18:00,user_d,ip,192.0.2.42,#phishing,https://x.com/user_d/status/5
-`
-	out, err := parseTweetFeedCSV(strings.NewReader(sample))
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantURLs := []string{
-		"https://evil.example.com/login",
-		"http://multi.example.net/page",
-	}
-	if len(out) != len(wantURLs) {
-		t.Fatalf("expected %d urls, got %d: %v", len(wantURLs), len(out), out)
-	}
-	for i, w := range wantURLs {
-		if out[i].URL != w {
-			t.Errorf("row %d: got %q, want %q", i, out[i].URL, w)
-		}
-		if out[i].Source != "tweetfeed" {
-			t.Errorf("row %d: source = %q, want tweetfeed", i, out[i].Source)
-		}
-	}
-}
-
-// --- helpers ---
 
 func equalStringSlices(a, b []string) bool {
 	if len(a) != len(b) {
@@ -926,7 +897,7 @@ func TestWriteCaptureJSON(t *testing.T) {
 		Size:        1234,
 		ContentType: "application/zip",
 		Source:      "feed",
-		Intel:       &SourceIntel{Feed: "phishstats", Title: "PayPal", Tags: "database", AbuseContact: "abuse@example.com"},
+		Intel:       &sources.SourceIntel{Feed: "phishstats", Title: "PayPal", Tags: "database", AbuseContact: "abuse@example.com"},
 		SavedPath:   dir + "/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.zip",
 	}
 	writeCaptureJSON(rec, dir)

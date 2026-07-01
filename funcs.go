@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
-	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -27,46 +26,9 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 	termutil "github.com/andrew-d/go-termutil"
+	"github.com/cybercdh/kitphishr/internal/sources"
 	"golang.org/x/time/rate"
 )
-
-type PhishUrls struct {
-	URL    string `json:"url"`
-	Source string `json:"source,omitempty"`
-	// Origin is the feed URL this target was expanded from (the path-explosion
-	// root). Internal only — used to record which feed URLs we actually probed
-	// for cross-run scan dedup. Not serialised.
-	Origin string `json:"-"`
-	// Intel is optional threat-feed metadata about the URL, carried from the
-	// feed through to capture.json so the analyzer can use it. nil for feeds
-	// that don't expose it. Rides alongside Source.
-	Intel *SourceIntel `json:"intel,omitempty"`
-}
-
-// SourceIntel is optional threat-feed metadata about the URL a kit was captured
-// from. Populated by feeds that expose it (PhishStats, phishunt.io). It flows
-// feed → target → Response → IndexRecord → capture.json (provenance, like
-// Source), and the analyzer Lambda both feeds the semantic fields
-// (title/tags/score/brand) to the SLM and persists the whole block in kit.json.
-// All fields optional; a feed fills what it has.
-type SourceIntel struct {
-	Feed         string   `json:"feed,omitempty"`  // feed that produced this intel
-	Score        *float64 `json:"score,omitempty"` // feed's phishing-confidence score
-	Title        string   `json:"title,omitempty"` // page <title> (often names the impersonated brand)
-	Tags         string   `json:"tags,omitempty"`  // feed-assigned tags
-	Brand        string   `json:"brand,omitempty"` // feed-labelled impersonated brand (phishunt `company`)
-	IP           string   `json:"ip,omitempty"`
-	ASN          string   `json:"asn,omitempty"`
-	ISP          string   `json:"isp,omitempty"` // hosting provider / network operator (phishunt `org`)
-	CountryCode  string   `json:"country_code,omitempty"`
-	Cert         string   `json:"cert,omitempty"` // TLS cert issuer (e.g. "Let's Encrypt")
-	AbuseContact string   `json:"abuse_contact,omitempty"`
-	FirstSeen    string   `json:"first_seen,omitempty"` // feed's first-seen date for the URL
-	// Corroboration counts how many independent sources also flag this URL
-	// (phishunt's malicious_{google,openphish,phishtank,tweetfeed,urlscan}).
-	// nil when the feed doesn't provide cross-source signals.
-	Corroboration *int `json:"corroboration,omitempty"`
-}
 
 // kitArchiveNames is the built-in wordlist of common phishing-kit archive
 // names. Used for "${dir}/${name}.${ext}" guess generation when the user
@@ -276,8 +238,6 @@ func ParseExtensions(s string) []string {
 	return out
 }
 
-type fetchFn func() ([]PhishUrls, error)
-
 type Response struct {
 	StatusCode    int
 	Body          []byte
@@ -285,7 +245,7 @@ type Response struct {
 	ContentLength int64
 	ContentType   string
 	Source        string
-	Intel         *SourceIntel
+	Intel         *sources.SourceIntel
 }
 
 type IndexRecord struct {
@@ -295,7 +255,7 @@ type IndexRecord struct {
 	Size         int          `json:"size"`
 	ContentType  string       `json:"content_type,omitempty"`
 	Source       string       `json:"source,omitempty"`
-	Intel        *SourceIntel `json:"intel,omitempty"`
+	Intel        *sources.SourceIntel `json:"intel,omitempty"`
 	SavedPath    string       `json:"saved_path,omitempty"`
 	Deduplicated bool         `json:"deduplicated,omitempty"`
 }
@@ -440,388 +400,6 @@ func (h *hostRateLimiter) Wait(ctx context.Context, host string) error {
 	return h.limiterFor(host).Wait(ctx)
 }
 
-// --- feed fetchers ---
-
-/*
-iterate over a list of functions to pull the latest
-phishfeed urls from each source. each source tags its
-URLs with its name so we can record provenance.
-*/
-func GetPhishURLsFromManyFeeds() ([]PhishUrls, error) {
-
-	// NOTE on licensing: several of these feeds (PhishTank, OpenPhish free
-	// feed, PhishStats) restrict commercial use of their URL lists.
-	// TweetFeed is CC0 1.0 (public domain) and safe to use commercially. For
-	// a commercial deployment, prefer the commercial-safe subset.
-	fetchFns := []fetchFn{
-		getPhishTankURLs,
-		getOpenPhishURLs,
-		getPhishingDatabaseLinks,
-		getPhishStatsInfo,
-		getPhishuntFeed,
-		getTweetFeedURLs,
-		getDanielKitURLs,
-	}
-
-	phishing_urls := make(chan PhishUrls)
-	out := make([]PhishUrls, 0)
-
-	var wg sync.WaitGroup
-	for _, fn := range fetchFns {
-		wg.Add(1)
-		fetch := fn
-		go func() {
-			defer wg.Done()
-			resp, err := fetch()
-			if err != nil {
-				return
-			}
-			for _, r := range resp {
-				phishing_urls <- r
-			}
-		}()
-	}
-
-	go func() {
-		wg.Wait()
-		close(phishing_urls)
-	}()
-
-	for w := range phishing_urls {
-		out = append(out, w)
-	}
-
-	return out, nil
-}
-
-func getOpenPhishURLs() ([]PhishUrls, error) {
-	phishfeed := "https://openphish.com/feed.txt"
-	res, err := http.Get(phishfeed)
-	if err != nil {
-		return []PhishUrls{}, err
-	}
-	defer res.Body.Close()
-	sc := bufio.NewScanner(res.Body)
-	out := make([]PhishUrls, 0)
-	for sc.Scan() {
-		out = append(out, PhishUrls{URL: sc.Text(), Source: "openphish"})
-	}
-	return out, nil
-}
-
-func getPhishTankURLs() ([]PhishUrls, error) {
-	phishfeed := "http://data.phishtank.com/data/online-valid.json"
-	apiKey := os.Getenv("PT_API_KEY")
-	if apiKey != "" {
-		phishfeed = fmt.Sprintf("http://data.phishtank.com/data/%s/online-valid.json", apiKey)
-	}
-
-	client := &http.Client{Timeout: 60 * time.Second}
-	req, err := http.NewRequest("GET", phishfeed, nil)
-	if err != nil {
-		return []PhishUrls{}, err
-	}
-	req.Header.Set("User-Agent", "kitphishr/1.0")
-	resp, err := client.Do(req)
-	if err != nil {
-		return []PhishUrls{}, err
-	}
-	defer resp.Body.Close()
-
-	var urls []PhishUrls
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return []PhishUrls{}, err
-	}
-	if err := json.Unmarshal(body, &urls); err != nil {
-		return []PhishUrls{}, err
-	}
-	for i := range urls {
-		urls[i].Source = "phishtank"
-	}
-	return urls, nil
-}
-
-func getPhishingDatabaseLinks() ([]PhishUrls, error) {
-	// Phishing.Database's currently-active full-link feed. (The old
-	// phishing-links-NEW-today.txt was abandoned in Dec 2025 when the project
-	// moved to domain feeds; this ACTIVE set is still maintained.)
-	phishfeed := "https://raw.githubusercontent.com/Phishing-Database/Phishing.Database/master/phishing-links-ACTIVE/phishing-links-ACTIVE1.txt"
-	res, err := http.Get(phishfeed)
-	if err != nil {
-		return []PhishUrls{}, err
-	}
-	defer res.Body.Close()
-	sc := bufio.NewScanner(res.Body)
-	out := make([]PhishUrls, 0)
-	for sc.Scan() {
-		out = append(out, PhishUrls{URL: sc.Text(), Source: "phishing.database"})
-	}
-	return out, nil
-}
-
-// getPhishStatsInfo pulls the newest phishing URLs from PhishStats' JSON API.
-// The old phish_score.csv endpoint is gone (404); the maintained API at
-// api.phishstats.info returns JSON, capped at 100 rows/page, newest-first via
-// _sort=-id. We page through phishStatsPages to gather a few hundred fresh
-// URLs, stopping early on a short page or error. Dedup happens downstream.
-func getPhishStatsInfo() ([]PhishUrls, error) {
-	const phishStatsPages = 5 // 100 rows/page → up to ~500 newest URLs
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	out := make([]PhishUrls, 0)
-	for page := 1; page <= phishStatsPages; page++ {
-		feed := fmt.Sprintf("https://api.phishstats.info/api/phishing?_size=100&_sort=-id&_p=%d", page)
-		req, err := http.NewRequest("GET", feed, nil)
-		if err != nil {
-			break
-		}
-		req.Header.Set("User-Agent", "kitphishr/1.0")
-		res, err := client.Do(req)
-		if err != nil {
-			break
-		}
-		body, err := io.ReadAll(res.Body)
-		res.Body.Close()
-		if err != nil {
-			break
-		}
-		// The API row is far richer than a bare URL — keep the fields that help
-		// the analyzer (title/tags/score for the SLM; ip/asn/isp/abuse_contact
-		// as provenance). Nullable fields (score, title, tags) decode to the
-		// zero value / nil when the API sends null.
-		var rows []struct {
-			URL          string   `json:"url"`
-			IP           string   `json:"ip"`
-			ASN          string   `json:"asn"`
-			ISP          string   `json:"isp"`
-			CountryCode  string   `json:"countrycode"`
-			AbuseContact string   `json:"abuse_contact"`
-			Title        string   `json:"title"`
-			Tags         string   `json:"tags"`
-			Score        *float64 `json:"score"`
-			Date         string   `json:"date"`
-		}
-		if err := json.Unmarshal(body, &rows); err != nil {
-			break
-		}
-		for _, r := range rows {
-			if r.URL == "" {
-				continue
-			}
-			out = append(out, PhishUrls{
-				URL:    r.URL,
-				Source: "phishstats",
-				Intel: &SourceIntel{
-					Feed:         "phishstats",
-					Score:        r.Score,
-					Title:        r.Title,
-					Tags:         r.Tags,
-					IP:           r.IP,
-					ASN:          r.ASN,
-					ISP:          r.ISP,
-					CountryCode:  r.CountryCode,
-					AbuseContact: r.AbuseContact,
-					FirstSeen:    r.Date,
-				},
-			})
-		}
-		if len(rows) < 100 {
-			break // reached the end of the feed
-		}
-	}
-	return out, nil
-}
-
-// getPhishuntFeed pulls phishunt.io's live JSON feed (~300 active phishing
-// URLs). It's the richest feed we consume: each row carries a pre-labelled
-// brand (`company`), host infra (ip/asn/org/country/cert), and cross-source
-// detection flags (google/openphish/phishtank/tweetfeed/urlscan). We map all of
-// it into SourceIntel — `company`→Brand (a strong SLM brand hint), `org`→ISP,
-// and the malicious_* flags→Corroboration count (a confidence/prioritisation
-// signal). These are phishing SITE URLs, so normal path-explosion applies.
-//
-// phishunt is the upstream feeding 0xDanielLopez/phishing_kits — see
-// project-0xdaniel-intel-sources. JSON endpoint is feed.json (the /feed/
-// HTML page's ?format=json path 404s).
-func getPhishuntFeed() ([]PhishUrls, error) {
-	const feed = "https://phishunt.io/feed.json"
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	req, err := http.NewRequest("GET", feed, nil)
-	if err != nil {
-		return []PhishUrls{}, err
-	}
-	req.Header.Set("User-Agent", "kitphishr/1.0")
-	req.Header.Set("Accept", "application/json")
-	res, err := client.Do(req)
-	if err != nil {
-		return []PhishUrls{}, err
-	}
-	defer res.Body.Close()
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		return []PhishUrls{}, err
-	}
-
-	var rows []struct {
-		URL          string `json:"url"`
-		Company      string `json:"company"`
-		FirstSeen    string `json:"first_seen"`
-		IP           string `json:"ip"`
-		Country      string `json:"country"`
-		ASN          string `json:"asn"`
-		Org          string `json:"org"`
-		Cert         string `json:"cert"`
-		MalGoogle    bool   `json:"malicious_google"`
-		MalOpenPhish bool   `json:"malicious_openphish"`
-		MalPhishTank bool   `json:"malicious_phishtank"`
-		MalTweetFeed bool   `json:"malicious_tweetfeed"`
-		MalURLScan   bool   `json:"malicious_urlscan"`
-	}
-	if err := json.Unmarshal(body, &rows); err != nil {
-		return []PhishUrls{}, err
-	}
-
-	out := make([]PhishUrls, 0, len(rows))
-	for _, r := range rows {
-		if r.URL == "" {
-			continue
-		}
-		corr := 0
-		for _, m := range []bool{r.MalGoogle, r.MalOpenPhish, r.MalPhishTank, r.MalTweetFeed, r.MalURLScan} {
-			if m {
-				corr++
-			}
-		}
-		out = append(out, PhishUrls{
-			URL:    r.URL,
-			Source: "phishunt",
-			Intel: &SourceIntel{
-				Feed:          "phishunt",
-				Brand:         r.Company,
-				IP:            r.IP,
-				ASN:           r.ASN,
-				ISP:           r.Org,
-				CountryCode:   r.Country,
-				Cert:          r.Cert,
-				FirstSeen:     r.FirstSeen,
-				Corroboration: &corr,
-			},
-		})
-	}
-	return out, nil
-}
-
-// getDanielKitURLs pulls the direct kit-archive URLs 0xDanielLopez publishes in
-// github.com/0xDanielLopez/phishing_kits — one urls.txt per month, listing the
-// .zip/.rar archives he captured from phishunt.io. These are EXACT archive
-// links (e.g. https://host/root.zip), so kitphishr fetches the still-live ones
-// directly instead of having to guess paths. We read the current + previous
-// month for gap-free coverage across month boundaries; cross-run dedup skips
-// repeats. Many entries will already be dead (he grabbed them days ago) — that
-// is expected, and the dead ones are exactly the case for a future
-// direct-archive ingest (he keeps the zip even when the URL is gone).
-//
-// License: the repo is "Research / OSINT use only". We fetch the live kit and
-// derive our OWN intelligence (no redistribution of his archives); the
-// 0xdaniel-kits source tag keeps the provenance/attribution explicit.
-func getDanielKitURLs() ([]PhishUrls, error) {
-	out := make([]PhishUrls, 0)
-	now := time.Now().UTC()
-	y, mo := now.Year(), int(now.Month())
-	py, pm := y, mo-1
-	if pm == 0 {
-		py, pm = y-1, 12
-	}
-	client := &http.Client{Timeout: 30 * time.Second}
-	for _, m := range [][2]int{{y, mo}, {py, pm}} {
-		feed := fmt.Sprintf(
-			"https://raw.githubusercontent.com/0xDanielLopez/phishing_kits/master/%04d/%04d%02d/urls.txt",
-			m[0], m[0], m[1],
-		)
-		req, err := http.NewRequest("GET", feed, nil)
-		if err != nil {
-			continue
-		}
-		req.Header.Set("User-Agent", "kitphishr/1.0")
-		res, err := client.Do(req)
-		if err != nil {
-			continue
-		}
-		if res.StatusCode != 200 {
-			res.Body.Close()
-			continue
-		}
-		sc := bufio.NewScanner(res.Body)
-		for sc.Scan() {
-			u := strings.TrimSpace(sc.Text())
-			if u != "" {
-				out = append(out, PhishUrls{URL: u, Source: "0xdaniel-kits"})
-			}
-		}
-		res.Body.Close()
-	}
-	return out, nil
-}
-
-// getTweetFeedURLs pulls the rolling 7-day CSV from 0xDanielLopez/TweetFeed,
-// which scrapes infosec tweets for IOCs. The CSV mixes types (url, domain,
-// sha256, ip); we keep url-typed rows tagged #phishing or #scam.
-//
-// week.csv (not today.csv): today.csv resets at 00:00 UTC, so a scan cadence
-// coarser than the reset window drops URLs added in the final pre-midnight
-// hours. The rolling week window is gap-free; cross-run dedup absorbs repeats.
-//
-// License: CC0 1.0 (public domain) — reuse freely, no attribution required.
-func getTweetFeedURLs() ([]PhishUrls, error) {
-	const feed = "https://raw.githubusercontent.com/0xDanielLopez/TweetFeed/master/week.csv"
-	res, err := http.Get(feed)
-	if err != nil {
-		return []PhishUrls{}, err
-	}
-	defer res.Body.Close()
-	return parseTweetFeedCSV(res.Body)
-}
-
-// parseTweetFeedCSV is split out so the filtering logic is unit-testable
-// without hitting the network. Expected format (6 columns):
-//
-//	date, user, type, value, tags, tweet_url
-//
-// We yield only rows where type == "url" and tags contains "phishing".
-func parseTweetFeedCSV(r io.Reader) ([]PhishUrls, error) {
-	reader := csv.NewReader(r)
-	reader.Comma = ','
-	reader.FieldsPerRecord = -1
-	reader.LazyQuotes = true
-	data, err := reader.ReadAll()
-	if err != nil {
-		return nil, err
-	}
-	var out []PhishUrls
-	for _, row := range data {
-		if len(row) < 5 {
-			continue
-		}
-		if !strings.EqualFold(strings.TrimSpace(row[2]), "url") {
-			continue
-		}
-		// #phishing or #scam — both are phishing-adjacent kit hosts. Skip
-		// #malware/#ransomware (different threat class, not kit archives).
-		tags := strings.ToLower(row[4])
-		if !strings.Contains(tags, "phishing") && !strings.Contains(tags, "scam") {
-			continue
-		}
-		u := strings.TrimSpace(row[3])
-		if u == "" {
-			continue
-		}
-		out = append(out, PhishUrls{URL: u, Source: "tweetfeed"})
-	}
-	return out, nil
-}
-
 /*
 get a list of urls either from the user piping into this
 program, or fetch the latest phishing urls from the feeds.
@@ -831,17 +409,17 @@ state. This is the right behaviour for scheduled/containerised runs
 where there's no TTY but also no stdin pipe — without it the scanner
 would read from an empty stdin and scan nothing.
 */
-func GetUserInput(forceFeeds bool) ([]PhishUrls, error) {
+func GetUserInput(forceFeeds bool) ([]sources.PhishUrls, error) {
 	if forceFeeds {
-		return GetPhishURLsFromManyFeeds()
+		return sources.FetchAll()
 	}
-	var urls []PhishUrls
+	var urls []sources.PhishUrls
 	if termutil.Isatty(os.Stdin.Fd()) {
-		return GetPhishURLsFromManyFeeds()
+		return sources.FetchAll()
 	}
 	sc := bufio.NewScanner(os.Stdin)
 	for sc.Scan() {
-		urls = append(urls, PhishUrls{URL: sc.Text(), Source: "stdin"})
+		urls = append(urls, sources.PhishUrls{URL: sc.Text(), Source: "stdin"})
 	}
 	return urls, nil
 }
@@ -862,8 +440,8 @@ guess for each (word, ext) pair. e.g. for /foo/bar with wordlist
 	http://example.com/foo/bar/panel.zip
 	... (and similarly for /foo and /)
 */
-func GenerateTargets(ctx context.Context, urls []PhishUrls, wordlist []string, extensions []string) chan PhishUrls {
-	out := make(chan PhishUrls, 128)
+func GenerateTargets(ctx context.Context, urls []sources.PhishUrls, wordlist []string, extensions []string) chan sources.PhishUrls {
+	out := make(chan sources.PhishUrls, 128)
 	go func() {
 		defer close(out)
 		seen := make(map[string]bool)
@@ -874,9 +452,9 @@ func GenerateTargets(ctx context.Context, urls []PhishUrls, wordlist []string, e
 		// any URL for host B appears, leaving 50 workers contending for
 		// host A's single per-host rate limiter while the other 49 sit
 		// idle. Round-robin keeps every host's queue active in parallel.
-		hostQueues := make(map[string][]PhishUrls)
+		hostQueues := make(map[string][]sources.PhishUrls)
 		hostOrder := []string{}
-		add := func(u, source, origin string, intel *SourceIntel) {
+		add := func(u, source, origin string, intel *sources.SourceIntel) {
 			if seen[u] {
 				return
 			}
@@ -885,7 +463,7 @@ func GenerateTargets(ctx context.Context, urls []PhishUrls, wordlist []string, e
 			if _, exists := hostQueues[h]; !exists {
 				hostOrder = append(hostOrder, h)
 			}
-			hostQueues[h] = append(hostQueues[h], PhishUrls{URL: u, Source: source, Origin: origin, Intel: intel})
+			hostQueues[h] = append(hostQueues[h], sources.PhishUrls{URL: u, Source: source, Origin: origin, Intel: intel})
 		}
 
 		for _, row := range urls {
@@ -950,7 +528,7 @@ func GenerateTargets(ctx context.Context, urls []PhishUrls, wordlist []string, e
 	return out
 }
 
-func sendTarget(ctx context.Context, ch chan<- PhishUrls, t PhishUrls) bool {
+func sendTarget(ctx context.Context, ch chan<- sources.PhishUrls, t sources.PhishUrls) bool {
 	select {
 	case <-ctx.Done():
 		return false
@@ -1097,7 +675,7 @@ func isUnreachableErr(err error) bool {
 // archive-shaped it then GETs. Per-host rate limiting and retry-with-backoff
 // are applied to every network call. If the host has previously been seen
 // as unreachable in this run, the call short-circuits with ErrHostDead.
-func AttemptTarget(ctx context.Context, client *http.Client, limiter *hostRateLimiter, target PhishUrls) (Response, error) {
+func AttemptTarget(ctx context.Context, client *http.Client, limiter *hostRateLimiter, target sources.PhishUrls) (Response, error) {
 	host := hostOf(target.URL)
 
 	if isHostMarkedDead(host) {
