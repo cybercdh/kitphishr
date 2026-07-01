@@ -11,7 +11,7 @@ kitphishr scans suspected phishing URLs for exposed kit archives — open direct
 ## Highlights
 
 - **Two subcommands.** `kitphishr` scans URLs for kits; `kitphishr analyze` extracts attacker indicators and classifies the impersonated brand from captured kits.
-- **Built-in threat feeds.** Pulls fresh URLs from PhishTank, OpenPhish, PhishStats, and the Phishing.Database project — or accept a custom URL list on stdin.
+- **Built-in threat feeds.** Pulls fresh URLs from several open-source phishing feeds (PhishTank, OpenPhish, PhishStats, Phishing.Database, phishunt.io, TweetFeed, and 0xDanielLopez's kit archives) — or accept a custom URL list on stdin. See [Sources](#sources) for the full, always-current list.
 - **Polite by default.** Per-host rate limiting, retry with exponential backoff, and graceful Ctrl-C handling.
 - **Structured output.** JSONL records with SHA256-keyed deduplication and source-feed provenance, designed to stream into Elastic, Splunk, MISP, or any TI pipeline.
 - **Configurable hunting.** Supply your own wordlists and extension sets to target specific kit naming conventions.
@@ -53,6 +53,24 @@ Each saved kit appends a JSONL record to `kits/index.jsonl`:
 
 Identical kits captured at different URLs are deduplicated by SHA256 — one file on disk, N entries in the index.
 
+## Sources
+
+kitphishr pulls candidate URLs from the open-source phishing feeds below. Each feed is declared in [`internal/sources`](./internal/sources) with its provenance tag, homepage, and license; the table is generated from that registry and verified in CI, so it always reflects the feeds that are actually enabled.
+
+<!-- sources:start -->
+| Feed | License | Commercial use |
+|------|---------|----------------|
+| [`phishtank`](https://www.phishtank.com/) | PhishTank ToS (non-commercial free feed) | ❌ |
+| [`openphish`](https://openphish.com/) | OpenPhish ToS (non-commercial free feed) | ❌ |
+| [`phishing.database`](https://github.com/Phishing-Database/Phishing.Database) | See project repo | ❌ |
+| [`phishstats`](https://phishstats.info/) | PhishStats ToS (non-commercial) | ❌ |
+| [`phishunt`](https://phishunt.io/) | phishunt.io ToS | ❌ |
+| [`tweetfeed`](https://github.com/0xDanielLopez/TweetFeed) | CC0-1.0 | ✅ |
+| [`0xdaniel-kits`](https://github.com/0xDanielLopez/phishing_kits) | Research / OSINT use only | ❌ |
+<!-- sources:end -->
+
+**Licensing:** several feeds restrict commercial use of their URL lists (see the *Commercial use* column). For a commercial deployment, prefer the commercial-safe subset. This concerns the feeds' URL data, not kitphishr's own license (below).
+
 ## Flags
 
 ### `kitphishr` (scan)
@@ -84,7 +102,7 @@ Identical kits captured at different URLs are deduplicated by SHA256 — one fil
 | Flag | Default | Description |
 |---|---|---|
 | `-o <path>` | `-` (stdout) | output destination |
-| `-brands <path>` | (built-in) | JSON file of brand signatures (see `brands.go` for the default list and schema) |
+| `-brands <path>` | (built-in) | JSON file of brand signatures (see `internal/analyze/brands.go` for the default list and schema) |
 
 Targets can be passed as arguments or piped via stdin.
 
