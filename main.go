@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cybercdh/kitphishr/internal/analyze"
 	"github.com/cybercdh/kitphishr/internal/sources"
 	"github.com/gookit/color"
 )
@@ -45,7 +46,7 @@ var (
 	blockInternal    bool
 	sourceOverride   string
 	dumpTargets      bool
-	kitJSONBrands    []BrandSignature
+	kitJSONBrands    []analyze.BrandSignature
 	scannedURLsPath  string
 	idx              *Index
 
@@ -127,14 +128,14 @@ func main() {
 	// subcommand dispatch — `kitphishr analyze <kit>` routes to the analyzer;
 	// anything else (or no args) preserves the existing scan behaviour.
 	if len(os.Args) >= 2 && os.Args[1] == "analyze" {
-		runAnalyze(os.Args[2:])
+		analyze.Run(os.Args[2:])
 		return
 	}
 
 	// `kitphishr transcode <in.rar|in.7z> <out.zip>` re-emits a rar/7z archive
 	// as a zip so the zip-only analyze/SLM path can process it.
 	if len(os.Args) >= 2 && os.Args[1] == "transcode" {
-		runTranscode(os.Args[2:])
+		analyze.RunTranscode(os.Args[2:])
 		return
 	}
 
@@ -200,7 +201,7 @@ func main() {
 		// Load brand signatures once up front when emitting per-kit JSON, so the
 		// on-save analyse path doesn't re-load them for every kit.
 		if emitKitJSON {
-			b, berr := LoadBrandSignatures("")
+			b, berr := analyze.LoadBrandSignatures("")
 			if berr != nil {
 				fmt.Fprintf(os.Stderr, "failed to load brand signatures for -kit-json: %s\n", berr)
 				os.Exit(1)

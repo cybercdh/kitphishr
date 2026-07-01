@@ -26,6 +26,7 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 	termutil "github.com/andrew-d/go-termutil"
+	"github.com/cybercdh/kitphishr/internal/analyze"
 	"github.com/cybercdh/kitphishr/internal/sources"
 	"golang.org/x/time/rate"
 )
@@ -1105,7 +1106,7 @@ func writeCaptureJSON(rec IndexRecord, outputDir string) {
 // event-driven ingestion pipeline consumes. Best-effort — errors are logged to
 // stderr, never fatal to the scan.
 func writeKitJSON(rec IndexRecord, savedPath, outputDir string) {
-	ar := AnalyzePath(savedPath, kitJSONBrands)
+	ar := analyze.AnalyzePath(savedPath, kitJSONBrands)
 	b, err := json.Marshal(ar)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "kit-json: marshal %s: %s\n", rec.SHA256, err)

@@ -1,4 +1,4 @@
-package main
+package analyze
 
 import (
 	"fmt"

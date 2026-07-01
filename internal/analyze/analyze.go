@@ -1,4 +1,4 @@
-package main
+package analyze
 
 import (
 	"archive/zip"
@@ -80,7 +80,7 @@ type AnalyzeResult struct {
 }
 
 // runAnalyze is the entry point for `kitphishr analyze`.
-func runAnalyze(args []string) {
+func Run(args []string) {
 	fset := flag.NewFlagSet("analyze", flag.ExitOnError)
 	outputPath := fset.String("o", "-", "output destination (- for stdout)")
 	brandsPath := fset.String("brands", "", "path to a JSON file of brand signatures (built-in default if empty)")

@@ -1,4 +1,4 @@
-package main
+package analyze
 
 import (
 	"archive/zip"
@@ -29,7 +29,7 @@ const (
 var errUnsupportedArchive = errors.New("not a rar or 7z archive")
 
 // runTranscode implements `kitphishr transcode <in.rar|in.7z> <out.zip>`.
-func runTranscode(args []string) {
+func RunTranscode(args []string) {
 	fset := flag.NewFlagSet("transcode", flag.ExitOnError)
 	fset.Usage = func() {
 		fmt.Fprintf(os.Stderr, "usage: kitphishr transcode <in.rar|in.7z> <out.zip>\n")
