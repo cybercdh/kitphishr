@@ -1,4 +1,4 @@
-package main
+package hunt
 
 import (
 	"archive/zip"
@@ -76,9 +76,9 @@ func hasArchiveExtension(s string) bool {
 // extraction support lands, which still beats dropping the kit.)
 var captureArchiveExts = []string{".zip", ".gz", ".rar", ".7z", ".tgz"}
 
-// hasCaptureExtension reports whether a URL ends in an extension we capture
+// HasCaptureExtension reports whether a URL ends in an extension we capture
 // (query string stripped). Gate for saving a fetched archive.
-func hasCaptureExtension(s string) bool {
+func HasCaptureExtension(s string) bool {
 	s = strings.ToLower(s)
 	if i := strings.Index(s, "?"); i >= 0 {
 		s = s[:i]
@@ -358,17 +358,17 @@ func (i *Index) Close() error {
 
 // --- per-host rate limiting ---
 
-type hostRateLimiter struct {
+type HostRateLimiter struct {
 	mu       sync.Mutex
 	limiters map[string]*rate.Limiter
 	rate     rate.Limit
 	burst    int
 }
 
-// newHostRateLimiter builds a per-host token bucket. Passing rps <= 0
+// NewHostRateLimiter builds a per-host token bucket. Passing rps <= 0
 // returns an "unlimited" limiter — useful when scanning burner phishing
 // infrastructure where the politeness/throughput trade-off doesn't apply.
-func newHostRateLimiter(rps float64, burst int) *hostRateLimiter {
+func NewHostRateLimiter(rps float64, burst int) *HostRateLimiter {
 	limit := rate.Limit(rps)
 	if rps <= 0 {
 		limit = rate.Inf
@@ -376,14 +376,14 @@ func newHostRateLimiter(rps float64, burst int) *hostRateLimiter {
 			burst = 1
 		}
 	}
-	return &hostRateLimiter{
+	return &HostRateLimiter{
 		limiters: make(map[string]*rate.Limiter),
 		rate:     limit,
 		burst:    burst,
 	}
 }
 
-func (h *hostRateLimiter) limiterFor(host string) *rate.Limiter {
+func (h *HostRateLimiter) limiterFor(host string) *rate.Limiter {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if l, ok := h.limiters[host]; ok {
@@ -394,7 +394,7 @@ func (h *hostRateLimiter) limiterFor(host string) *rate.Limiter {
 	return l
 }
 
-func (h *hostRateLimiter) Wait(ctx context.Context, host string) error {
+func (h *HostRateLimiter) Wait(ctx context.Context, host string) error {
 	if h.rate == rate.Inf {
 		return nil // skip the syscall entirely
 	}
@@ -676,7 +676,7 @@ func isUnreachableErr(err error) bool {
 // archive-shaped it then GETs. Per-host rate limiting and retry-with-backoff
 // are applied to every network call. If the host has previously been seen
 // as unreachable in this run, the call short-circuits with ErrHostDead.
-func AttemptTarget(ctx context.Context, client *http.Client, limiter *hostRateLimiter, target sources.PhishUrls) (Response, error) {
+func AttemptTarget(ctx context.Context, client *http.Client, limiter *HostRateLimiter, target sources.PhishUrls) (Response, error) {
 	host := hostOf(target.URL)
 
 	if isHostMarkedDead(host) {
@@ -746,7 +746,7 @@ var archiveContentTypeSignals = []string{
 // (405 Method Not Allowed, or a redirect hop whose final HEAD is unreliable —
 // e.g. http->https kit hosts), a missing Content-Length (chunked), or a
 // missing/blank Content-Type. A needless GET costs at most one MAX_DOWNLOAD_SIZE
-// download that validArchiveBody then rejects. We skip the GET only on a
+// download that ValidArchiveBody then rejects. We skip the GET only on a
 // confident disqualification: a 200 HEAD advertising a concrete non-archive
 // content type, or an advertised size over the cap.
 func shouldFetchAfterProbe(r Response) bool {
@@ -807,11 +807,11 @@ var archiveMagics = [][]byte{
 	{0x1F, 0x8B},                         // gzip (.gz / .tar.gz / .tgz)
 }
 
-// validArchiveBody reports whether body is a recognised archive: a parseable
+// ValidArchiveBody reports whether body is a recognised archive: a parseable
 // zip, or a known non-zip signature. Generalises validZipBody across every
 // format captureArchiveExts admits, so a .rar/.7z/.tgz with a real archive body
 // is saved while a stub/HTML body is still rejected.
-func validArchiveBody(body []byte) bool {
+func ValidArchiveBody(body []byte) bool {
 	if validZipBody(body) {
 		return true
 	}
@@ -907,7 +907,7 @@ func probeOnce(ctx context.Context, client *http.Client, rawURL string) (Respons
 	if err != nil {
 		return Response{}, err
 	}
-	req.Header.Set("User-Agent", ua)
+	req.Header.Set("User-Agent", Config.UserAgent)
 	// Keep-alive is left on: we make many requests to the same host and
 	// re-using the connection eliminates a TLS handshake per request,
 	// which dominates per-request latency for HTTPS targets.
@@ -934,7 +934,7 @@ func fetchOnce(ctx context.Context, client *http.Client, rawURL string) (Respons
 	if err != nil {
 		return Response{}, err
 	}
-	req.Header.Set("User-Agent", ua)
+	req.Header.Set("User-Agent", Config.UserAgent)
 	// Keep-alive on — see probeOnce comment.
 
 	httpresp, err := client.Do(req)
@@ -1071,10 +1071,10 @@ func (r Response) SaveResponse(idx *Index, outputDir string) (savedPath string, 
 	if err := idx.Record(rec); err != nil {
 		return target, false, err
 	}
-	if emitKitJSON {
+	if Config.EmitKitJSON {
 		writeKitJSON(rec, target, outputDir)
 	}
-	if emitCaptureJSON {
+	if Config.EmitCaptureJSON {
 		writeCaptureJSON(rec, outputDir)
 	}
 	return target, false, nil
@@ -1106,7 +1106,7 @@ func writeCaptureJSON(rec IndexRecord, outputDir string) {
 // event-driven ingestion pipeline consumes. Best-effort — errors are logged to
 // stderr, never fatal to the scan.
 func writeKitJSON(rec IndexRecord, savedPath, outputDir string) {
-	ar := analyze.AnalyzePath(savedPath, kitJSONBrands)
+	ar := analyze.AnalyzePath(savedPath, Config.KitJSONBrands)
 	b, err := json.Marshal(ar)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "kit-json: marshal %s: %s\n", rec.SHA256, err)

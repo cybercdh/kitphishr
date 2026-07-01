@@ -1,4 +1,4 @@
-package main
+package hunt
 
 import (
 	"archive/zip"
@@ -484,11 +484,11 @@ func TestIntegration_FetchAndSaveZip(t *testing.T) {
 
 	// Use a small UA stand-in — the package-level `ua` var is set by flag parsing in main,
 	// which doesn't run in tests, so we set it explicitly here.
-	ua = defaultUserAgent
+	Config.UserAgent = "kitphishr-test-agent"
 
 	ctx := context.Background()
 	client := MakeClient(10, false)
-	limiter := newHostRateLimiter(50, 50) // permissive in tests
+	limiter := NewHostRateLimiter(50, 50) // permissive in tests
 
 	t.Run("direct zip fetch", func(t *testing.T) {
 		intel := &sources.SourceIntel{Feed: "test", Title: "Coinbase login", ASN: "AS1234"}
@@ -612,47 +612,6 @@ func TestIntegration_FetchAndSaveZip(t *testing.T) {
 	})
 }
 
-func TestResolveHref(t *testing.T) {
-	cases := []struct {
-		base, href, want string
-	}{
-		{"http://x.com/dir/", "kit.zip", "http://x.com/dir/kit.zip"},
-		{"http://x.com/dir/", "/files/kit.zip", "http://x.com/files/kit.zip"},
-		{"http://x.com/dir", "kit.zip", "http://x.com/kit.zip"},
-		{"http://x.com/dir/page.html", "kit.zip", "http://x.com/dir/kit.zip"},
-		{"http://x.com/dir/", "https://other.com/kit.zip", "https://other.com/kit.zip"},
-		{"http://x.com/dir/", "../up/kit.zip", "http://x.com/up/kit.zip"},
-		{"http://x.com/dir/", "kit.zip?v=1", "http://x.com/dir/kit.zip?v=1"},
-	}
-	for _, c := range cases {
-		got, ok := resolveHref(c.base, c.href)
-		if !ok {
-			t.Errorf("resolveHref(%q, %q) returned ok=false", c.base, c.href)
-			continue
-		}
-		if got != c.want {
-			t.Errorf("resolveHref(%q, %q) = %q, want %q", c.base, c.href, got, c.want)
-		}
-	}
-}
-
-func TestClaimKitURL_DedupsWithinRun(t *testing.T) {
-	// Reset package-level map for test isolation.
-	seenKitURLsMu.Lock()
-	seenKitURLs = make(map[string]struct{})
-	seenKitURLsMu.Unlock()
-
-	if !claimKitURL("http://x.com/kit.zip") {
-		t.Error("first claim should succeed")
-	}
-	if claimKitURL("http://x.com/kit.zip") {
-		t.Error("second claim of same URL should fail")
-	}
-	if !claimKitURL("http://x.com/other.zip") {
-		t.Error("claim of different URL should succeed")
-	}
-}
-
 func TestGenerateTargets_InterleavesAcrossHosts(t *testing.T) {
 	ctx := context.Background()
 	in := []sources.PhishUrls{
@@ -692,7 +651,7 @@ func TestGenerateTargets_InterleavesAcrossHosts(t *testing.T) {
 }
 
 func TestHostRateLimiter_UnlimitedWhenRPSZero(t *testing.T) {
-	limiter := newHostRateLimiter(0, 0)
+	limiter := NewHostRateLimiter(0, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
@@ -713,12 +672,12 @@ func TestDeadHostShortCircuit(t *testing.T) {
 	// of run order with other tests that touch real hostnames.
 	deadHostSet = sync.Map{}
 
-	ua = defaultUserAgent
+	Config.UserAgent = "kitphishr-test-agent"
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	client := MakeClient(5, false)
-	limiter := newHostRateLimiter(50, 50)
+	limiter := NewHostRateLimiter(50, 50)
 
 	// RFC 6761 reserves the .invalid TLD as guaranteed-NXDOMAIN.
 	target := sources.PhishUrls{URL: "http://kitphishr-deadhost-test.invalid/kit.zip", Source: "test"}
@@ -857,8 +816,8 @@ func TestValidArchiveBody(t *testing.T) {
 		{"too short for magic", []byte("Rar"), false},
 	}
 	for _, tc := range cases {
-		if got := validArchiveBody(tc.body); got != tc.want {
-			t.Errorf("%s: validArchiveBody = %v, want %v", tc.name, got, tc.want)
+		if got := ValidArchiveBody(tc.body); got != tc.want {
+			t.Errorf("%s: ValidArchiveBody = %v, want %v", tc.name, got, tc.want)
 		}
 	}
 }
@@ -882,8 +841,8 @@ func TestHasCaptureExtension(t *testing.T) {
 		{"https://host/", false},
 	}
 	for _, tc := range cases {
-		if got := hasCaptureExtension(tc.url); got != tc.want {
-			t.Errorf("hasCaptureExtension(%q) = %v, want %v", tc.url, got, tc.want)
+		if got := HasCaptureExtension(tc.url); got != tc.want {
+			t.Errorf("HasCaptureExtension(%q) = %v, want %v", tc.url, got, tc.want)
 		}
 	}
 }

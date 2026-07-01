@@ -17,14 +17,12 @@ import (
 	"time"
 
 	"github.com/cybercdh/kitphishr/internal/analyze"
+	"github.com/cybercdh/kitphishr/internal/hunt"
 	"github.com/cybercdh/kitphishr/internal/sources"
 	"github.com/gookit/color"
 )
 
-const (
-	defaultUserAgent  = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-	MAX_DOWNLOAD_SIZE = 104857600 // 100mb
-)
+const defaultUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
 var (
 	verbose          bool
@@ -46,9 +44,8 @@ var (
 	blockInternal    bool
 	sourceOverride   string
 	dumpTargets      bool
-	kitJSONBrands    []analyze.BrandSignature
 	scannedURLsPath  string
-	idx              *Index
+	idx              *hunt.Index
 
 	seenKitURLsMu sync.Mutex
 	seenKitURLs   = make(map[string]struct{})
@@ -90,7 +87,7 @@ func runProgress(ctx context.Context, interval time.Duration, start time.Time, d
 			lastAttempted = attempted
 			elapsed := time.Since(start).Round(time.Second)
 			fmt.Fprintf(os.Stderr, "[%s] scanned=%d found=%d saved=%d dead-hosts=%d | rate=%.1f/s\n",
-				elapsed, attempted, foundCount.Load(), savedCount.Load(), deadHostCount.Load(), rate)
+				elapsed, attempted, foundCount.Load(), savedCount.Load(), hunt.DeadHostCount(), rate)
 		}
 	}
 }
@@ -161,15 +158,23 @@ func main() {
 	flag.StringVar(&scannedURLsPath, "scanned-urls", "", "path to a file of feed URLs (one per line) scanned within the dedup window. Matching feed URLs are skipped (not re-explored/re-probed) this run, and the URLs actually probed are written to <output-dir>/scanned-urls.txt. Used for cross-run scan dedup so we don't re-hammer hosts already exhausted recently.")
 	flag.Parse()
 
+	// Publish the run-time settings the hunt engine reads while scanning.
+	// KitJSONBrands is filled later, once brand signatures are loaded.
+	hunt.Config = hunt.Options{
+		UserAgent:       ua,
+		EmitKitJSON:     emitKitJSON,
+		EmitCaptureJSON: emitCaptureJSON,
+	}
+
 	scanStart := time.Now()
 	progressDone := make(chan struct{})
 
-	wordlist, err := LoadWordlist(wordlistPath)
+	wordlist, err := hunt.LoadWordlist(wordlistPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to load wordlist %q: %s\n", wordlistPath, err)
 		os.Exit(1)
 	}
-	extensions := ParseExtensions(extensionsFlag)
+	extensions := hunt.ParseExtensions(extensionsFlag)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -190,8 +195,8 @@ func main() {
 
 	go runProgress(ctx, progressInterval, scanStart, progressDone)
 
-	client := MakeClient(to, blockInternal)
-	limiter := newHostRateLimiter(rps, burst)
+	client := hunt.MakeClient(to, blockInternal)
+	limiter := hunt.NewHostRateLimiter(rps, burst)
 
 	if downloadKits {
 		if err := os.MkdirAll(defaultOutputDir, os.ModePerm); err != nil {
@@ -206,11 +211,11 @@ func main() {
 				fmt.Fprintf(os.Stderr, "failed to load brand signatures for -kit-json: %s\n", berr)
 				os.Exit(1)
 			}
-			kitJSONBrands = b
+			hunt.Config.KitJSONBrands = b
 		}
 		indexPath := filepath.Join(defaultOutputDir, "index.jsonl")
 		var err error
-		idx, err = NewIndex(indexPath)
+		idx, err = hunt.NewIndex(indexPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "failed to open index file for writing: %s\n", err)
 			os.Exit(1)
@@ -220,7 +225,7 @@ func main() {
 		// Pre-seed dedup index with sha256s from prior runs, if supplied.
 		// Errors here are non-fatal — worst case we re-capture some kits.
 		if knownHashesPath != "" {
-			known, kerr := LoadKnownHashes(knownHashesPath)
+			known, kerr := hunt.LoadKnownHashes(knownHashesPath)
 			if kerr != nil {
 				fmt.Fprintf(os.Stderr, "warning: failed to load known-hashes %q: %s\n", knownHashesPath, kerr)
 			} else if len(known) > 0 {
@@ -231,8 +236,8 @@ func main() {
 	}
 
 	targets := make(chan sources.PhishUrls, concurrency)
-	responses := make(chan Response, concurrency)
-	tosave := make(chan Response, concurrency)
+	responses := make(chan hunt.Response, concurrency)
+	tosave := make(chan hunt.Response, concurrency)
 
 	// fetch workers
 	var wg sync.WaitGroup
@@ -258,10 +263,10 @@ func main() {
 				if verbose {
 					fmt.Printf("Attempting %s\n", target.URL)
 				}
-				res, err := AttemptTarget(ctx, client, limiter, target)
+				res, err := hunt.AttemptTarget(ctx, client, limiter, target)
 				attemptedCount.Add(1)
 				if err != nil {
-					if verbose && !errors.Is(err, ErrHostDead) {
+					if verbose && !errors.Is(err, hunt.ErrHostDead) {
 						color.Red.Printf("error fetching %s: %s\n", target.URL, err)
 					}
 					continue
@@ -328,7 +333,7 @@ func main() {
 		}()
 	}
 
-	input, err := GetUserInput(forceFeeds)
+	input, err := hunt.GetUserInput(forceFeeds)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "There was an error getting URLs from feeds.\n")
 		os.Exit(3)
@@ -359,7 +364,7 @@ func main() {
 	// tag every kept URL with its origin so the workers can record what we
 	// actually probe. Filtering here skips the whole path-explosion for already-
 	// scanned URLs — the expensive part — not just the capture.
-	skipSet, err := LoadScannedURLs(scannedURLsPath)
+	skipSet, err := hunt.LoadScannedURLs(scannedURLsPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not load -scanned-urls %q: %s (scanning all)\n", scannedURLsPath, err)
 	}
@@ -379,7 +384,7 @@ func main() {
 			skipped, skipped+len(input), len(input))
 	}
 
-	urls := GenerateTargets(ctx, input, wordlist, extensions)
+	urls := hunt.GenerateTargets(ctx, input, wordlist, extensions)
 
 sendLoop:
 	for u := range urls {
@@ -405,7 +410,7 @@ sendLoop:
 	if downloadKits {
 		scannedMu.Lock()
 		n := len(scanned)
-		err := WriteScannedURLs(filepath.Join(defaultOutputDir, "scanned-urls.txt"), scanned)
+		err := hunt.WriteScannedURLs(filepath.Join(defaultOutputDir, "scanned-urls.txt"), scanned)
 		scannedMu.Unlock()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not write scanned-urls.txt: %s\n", err)
@@ -422,31 +427,31 @@ sendLoop:
 			bySource[s] = c
 		}
 		scannedMu.Unlock()
-		if err := WriteScanStats(filepath.Join(defaultOutputDir, "scan-stats.json"),
+		if err := hunt.WriteScanStats(filepath.Join(defaultOutputDir, "scan-stats.json"),
 			bySource, int(attemptedCount.Load()), int(foundCount.Load()), int(savedCount.Load())); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not write scan-stats.json: %s\n", err)
 		}
 	}
 
 	fmt.Fprintf(os.Stderr, "Done. scanned=%d found=%d saved=%d dead-hosts=%d in %s\n",
-		attemptedCount.Load(), foundCount.Load(), savedCount.Load(), deadHostCount.Load(),
+		attemptedCount.Load(), foundCount.Load(), savedCount.Load(), hunt.DeadHostCount(),
 		time.Since(scanStart).Round(time.Second))
 }
 
 // handleResponse classifies a fetch response: either it's a zip we should
 // save, or it's an open-directory page we should walk for zip links.
-func handleResponse(ctx context.Context, client *http.Client, limiter *hostRateLimiter, resp Response, tosave chan<- Response) {
+func handleResponse(ctx context.Context, client *http.Client, limiter *hunt.HostRateLimiter, resp hunt.Response, tosave chan<- hunt.Response) {
 	if resp.StatusCode != http.StatusOK {
 		return
 	}
 
-	if hasCaptureExtension(resp.URL) {
-		// Gate on the BODY, not the headers: validArchiveBody is authoritative
+	if hunt.HasCaptureExtension(resp.URL) {
+		// Gate on the BODY, not the headers: hunt.ValidArchiveBody is authoritative
 		// (parses the zip central directory / matches an archive magic), so a
 		// valid kit served chunked (no Content-Length) or with a wrong
 		// Content-Type is still saved. Size is bounded by the fetch's
-		// MAX_DOWNLOAD_SIZE LimitReader; reject a truncated oversize body.
-		if n := len(resp.Body); n > 0 && n <= MAX_DOWNLOAD_SIZE && validArchiveBody(resp.Body) {
+		// hunt.MAX_DOWNLOAD_SIZE LimitReader; reject a truncated oversize body.
+		if n := len(resp.Body); n > 0 && n <= hunt.MAX_DOWNLOAD_SIZE && hunt.ValidArchiveBody(resp.Body) {
 			if !claimKitURL(resp.URL) {
 				return
 			}
@@ -466,7 +471,7 @@ func handleResponse(ctx context.Context, client *http.Client, limiter *hostRateL
 		}
 	}
 
-	hrefs, err := ZipFromDir(resp)
+	hrefs, err := hunt.ZipFromDir(resp)
 	if err != nil {
 		return
 	}
@@ -490,14 +495,14 @@ func handleResponse(ctx context.Context, client *http.Client, limiter *hostRateL
 		if !downloadKits {
 			continue
 		}
-		fetched, err := AttemptTarget(ctx, client, limiter, sources.PhishUrls{URL: hurl, Source: resp.Source})
+		fetched, err := hunt.AttemptTarget(ctx, client, limiter, sources.PhishUrls{URL: hurl, Source: resp.Source})
 		if err != nil {
 			if verbose {
 				color.Red.Printf("error downloading %s: %s\n", hurl, err)
 			}
 			continue
 		}
-		if !validArchiveBody(fetched.Body) {
+		if !hunt.ValidArchiveBody(fetched.Body) {
 			continue
 		}
 		select {
