@@ -890,3 +890,28 @@ func TestWriteCaptureJSON(t *testing.T) {
 		}
 	}
 }
+
+// TestWriteScanStatsDeadHosts verifies the per-run scan-stats.json carries the
+// dead-host count, so an on-demand single-URL scan can distinguish "host never
+// reached" from "reached, no kit found" when reporting back to the submitter.
+func TestWriteScanStatsDeadHosts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "scan-stats.json")
+	if err := WriteScanStats(path, map[string]int{"stdin": 1}, 3, 0, 0, 2); err != nil {
+		t.Fatalf("WriteScanStats: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var got ScanStats
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.DeadHosts != 2 {
+		t.Errorf("DeadHosts = %d, want 2", got.DeadHosts)
+	}
+	// The JSON key must be dead_hosts — the submission worker keys on it.
+	if !strings.Contains(string(data), `"dead_hosts":2`) {
+		t.Errorf("scan-stats.json missing dead_hosts key: %s", data)
+	}
+}

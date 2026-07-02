@@ -394,7 +394,8 @@ sendLoop:
 		}
 		scannedMu.Unlock()
 		if err := hunt.WriteScanStats(filepath.Join(defaultOutputDir, "scan-stats.json"),
-			bySource, int(attemptedCount.Load()), int(scanner.Found()), int(savedCount.Load())); err != nil {
+			bySource, int(attemptedCount.Load()), int(scanner.Found()), int(savedCount.Load()),
+			int(hunt.DeadHostCount())); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not write scan-stats.json: %s\n", err)
 		}
 	}

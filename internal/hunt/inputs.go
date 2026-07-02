@@ -154,12 +154,17 @@ type ScanStats struct {
 	ScannedTotal int            `json:"scanned_total"`
 	Found        int            `json:"found"`
 	Saved        int            `json:"saved"`
-	BySource     map[string]int `json:"by_source"`
+	// DeadHosts is the count of distinct hosts that were unreachable at the
+	// network layer this run (DNS/connect failure). For an on-demand single-URL
+	// scan it lets the orchestrator tell "host never reached" apart from
+	// "reached, no kit found" and report an accurate outcome to the submitter.
+	DeadHosts int            `json:"dead_hosts"`
+	BySource  map[string]int `json:"by_source"`
 }
 
 // WriteScanStats writes the per-run scan-stats.json. bySource maps each source
 // feed to the count of distinct feed URLs probed from it this run.
-func WriteScanStats(path string, bySource map[string]int, scannedTotal, found, saved int) error {
+func WriteScanStats(path string, bySource map[string]int, scannedTotal, found, saved, deadHosts int) error {
 	if bySource == nil {
 		bySource = map[string]int{}
 	}
@@ -168,6 +173,7 @@ func WriteScanStats(path string, bySource map[string]int, scannedTotal, found, s
 		ScannedTotal: scannedTotal,
 		Found:        found,
 		Saved:        saved,
+		DeadHosts:    deadHosts,
 		BySource:     bySource,
 	}
 	data, err := json.Marshal(stats)
