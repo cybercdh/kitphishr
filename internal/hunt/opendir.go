@@ -15,6 +15,12 @@ if we have, then look for hrefs that are zips.
 */
 func ZipFromDir(resp Response) ([]string, error) {
 	var zip_href []string
+	// Only HTML can be a directory listing. Check the header before handing the
+	// body to the HTML parser, so a 100 MB binary or a non-HTML page is never
+	// tokenised for nothing.
+	if !strings.Contains(strings.ToLower(resp.ContentType), "html") {
+		return zip_href, nil
+	}
 	data := bytes.NewReader(resp.Body)
 	doc, err := goquery.NewDocumentFromReader(data)
 	if err != nil {
