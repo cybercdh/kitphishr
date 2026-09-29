@@ -123,6 +123,18 @@ func main() {
 	flag.StringVar(&scannedURLsPath, "scanned-urls", "", "path to a file of feed URLs (one per line) scanned within the dedup window. Matching feed URLs are skipped (not re-explored/re-probed) this run, and the URLs actually probed are written to <output-dir>/scanned-urls.txt. Used for cross-run scan dedup so we don't re-hammer hosts already exhausted recently.")
 	flag.Parse()
 
+	if concurrency < 1 {
+		fmt.Fprintf(os.Stderr, "-c must be at least 1 (got %d)\n", concurrency)
+		os.Exit(2)
+	}
+	// Analyzer workers are sized at half the fetch pool. Integer division
+	// makes that zero for -c 1, and with no analyzer the responses channel is
+	// never drained, so the fetch worker blocks forever. Always run at least one.
+	analyzers := concurrency / 2
+	if analyzers < 1 {
+		analyzers = 1
+	}
+
 	// Publish the run-time settings the hunt engine reads while scanning.
 	// KitJSONBrands is filled later, once brand signatures are loaded.
 	hunt.Config = hunt.Options{
@@ -248,7 +260,7 @@ func main() {
 
 	// response analyzer workers
 	var rg sync.WaitGroup
-	for i := 0; i < concurrency/2; i++ {
+	for i := 0; i < analyzers; i++ {
 		rg.Add(1)
 		go func() {
 			defer rg.Done()
