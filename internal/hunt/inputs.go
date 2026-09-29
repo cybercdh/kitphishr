@@ -150,10 +150,10 @@ func WriteScannedURLs(path string, scanned map[string]struct{}) error {
 // source feed, plus run totals. Synced to S3 alongside scanned-urls.txt and
 // joined with kits-captured-per-source for the source-effectiveness dashboard.
 type ScanStats struct {
-	TS           string         `json:"ts"`
-	ScannedTotal int            `json:"scanned_total"`
-	Found        int            `json:"found"`
-	Saved        int            `json:"saved"`
+	TS           string `json:"ts"`
+	ScannedTotal int    `json:"scanned_total"`
+	Found        int    `json:"found"`
+	Saved        int    `json:"saved"`
 	// DeadHosts is the count of distinct hosts that were unreachable at the
 	// network layer this run (DNS/connect failure). For an on-demand single-URL
 	// scan it lets the orchestrator tell "host never reached" apart from

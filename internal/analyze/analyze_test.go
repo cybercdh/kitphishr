@@ -130,17 +130,17 @@ func TestAnalyzePath_MissingInput(t *testing.T) {
 
 func TestRelevantPath(t *testing.T) {
 	cases := map[string]bool{
-		"index.php":       true,
-		"a/b/c.phtml":     true,
-		"lib.js":          true,
-		"page.html":       true,
-		"data.txt":        true,
-		"logo.png":        false,
-		"font.woff2":      false,
-		"style.css":       false,
-		"binary":          false,
-		"archive.zip":     false, // we don't recurse into nested zips
-		"script.PHP":      true,  // case insensitive
+		"index.php":   true,
+		"a/b/c.phtml": true,
+		"lib.js":      true,
+		"page.html":   true,
+		"data.txt":    true,
+		"logo.png":    false,
+		"font.woff2":  false,
+		"style.css":   false,
+		"binary":      false,
+		"archive.zip": false, // we don't recurse into nested zips
+		"script.PHP":  true,  // case insensitive
 	}
 	for in, want := range cases {
 		if got := relevantPath(in); got != want {

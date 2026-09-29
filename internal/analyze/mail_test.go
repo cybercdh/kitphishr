@@ -113,13 +113,13 @@ func TestMailDrops_DedupAcrossFiles(t *testing.T) {
 
 func TestVariableHead(t *testing.T) {
 	cases := map[string]string{
-		"$to":              "$to",
-		"$to[0]":           "$to",
-		"$config['drop']":  "$config",
-		"$x":               "$x",
-		"$":                "",
-		"notvar":           "",
-		"$camelCase_99":    "$camelCase_99",
+		"$to":             "$to",
+		"$to[0]":          "$to",
+		"$config['drop']": "$config",
+		"$x":              "$x",
+		"$":               "",
+		"notvar":          "",
+		"$camelCase_99":   "$camelCase_99",
 	}
 	for in, want := range cases {
 		if got := variableHead(in); got != want {
@@ -130,9 +130,9 @@ func TestVariableHead(t *testing.T) {
 
 func TestParseStringLiteral(t *testing.T) {
 	cases := []struct {
-		in      string
-		val     string
-		wantOK  bool
+		in     string
+		val    string
+		wantOK bool
 	}{
 		{`"hello"`, "hello", true},
 		{`'world'`, "world", true},
