@@ -23,18 +23,60 @@ where there's no TTY but also no stdin pipe — without it the scanner
 would read from an empty stdin and scan nothing.
 */
 func GetUserInput(forceFeeds bool) ([]sources.PhishUrls, error) {
-	if forceFeeds {
-		return sources.FetchAll()
+	if forceFeeds || termutil.Isatty(os.Stdin.Fd()) {
+		urls, err := sources.FetchAll()
+		if err != nil {
+			return nil, err
+		}
+		return normalizeInputs(urls), nil
 	}
 	var urls []sources.PhishUrls
-	if termutil.Isatty(os.Stdin.Fd()) {
-		return sources.FetchAll()
-	}
 	sc := bufio.NewScanner(os.Stdin)
 	for sc.Scan() {
 		urls = append(urls, sources.PhishUrls{URL: sc.Text(), Source: "stdin"})
 	}
-	return urls, nil
+	return normalizeInputs(urls), nil
+}
+
+// normalizeInputs applies NormalizeURL to every row, dropping the ones that
+// cannot become a usable http(s) URL. Feeds and stdin both carry the odd
+// blank line, comment, or bare "host/path" entry.
+func normalizeInputs(rows []sources.PhishUrls) []sources.PhishUrls {
+	out := rows[:0]
+	for _, row := range rows {
+		u, ok := NormalizeURL(row.URL)
+		if !ok {
+			continue
+		}
+		row.URL = u
+		out = append(out, row)
+	}
+	return out
+}
+
+// NormalizeURL trims an input line and turns it into an absolute http(s) URL.
+// A bare "host/path" entry gets an http:// scheme: a schemeless URL parses
+// with an empty host, which made GenerateTargets emit "://host/path" targets
+// that every request then rejected, so such lines were silently scanned as
+// nothing. Blank lines, comments, and non-http schemes are rejected.
+func NormalizeURL(raw string) (string, bool) {
+	s := strings.TrimSpace(raw)
+	if s == "" || strings.HasPrefix(s, "#") {
+		return "", false
+	}
+	if !strings.Contains(s, "://") {
+		s = "http://" + s
+	}
+	u, err := url.Parse(s)
+	if err != nil || u.Host == "" {
+		return "", false
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+	default:
+		return "", false
+	}
+	return u.String(), true
 }
 
 /*
