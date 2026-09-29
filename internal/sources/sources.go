@@ -9,7 +9,72 @@
 // so enabling, disabling, or documenting a feed is a one-line change here.
 package sources
 
-import "sync"
+import (
+	"bufio"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"strings"
+	"sync"
+	"time"
+)
+
+// feedClient is shared by every fetcher. The default http client has no
+// timeout, so one stalled feed used to hang FetchAll, and with it the whole
+// scan, indefinitely.
+var feedClient = &http.Client{Timeout: 60 * time.Second}
+
+const feedUserAgent = "kitphishr/1.0"
+
+// feedGet performs a GET against a feed URL and returns the body reader only
+// for a 200. Error pages from a rate limiter or CDN (403/429/5xx) were
+// previously parsed line by line as if they were URLs.
+func feedGet(url string, accept string) (io.ReadCloser, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", feedUserAgent)
+	if accept != "" {
+		req.Header.Set("Accept", accept)
+	}
+	res, err := feedClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if res.StatusCode != http.StatusOK {
+		res.Body.Close()
+		return nil, fmt.Errorf("%s: unexpected status %d", url, res.StatusCode)
+	}
+	return res.Body, nil
+}
+
+// feedLines fetches a newline separated URL feed and tags every non-blank,
+// non-comment line with source.
+func feedLines(url, source string) ([]PhishUrls, error) {
+	body, err := feedGet(url, "")
+	if err != nil {
+		return nil, err
+	}
+	defer body.Close()
+	return parseLines(body, source), nil
+}
+
+func parseLines(r io.Reader, source string) []PhishUrls {
+	out := make([]PhishUrls, 0)
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		out = append(out, PhishUrls{URL: line, Source: source})
+	}
+	return out
+}
 
 // PhishUrls is a single feed URL plus its provenance. It is the unit of work
 // that flows feed → target expansion → capture: sources produce it, the hunt
@@ -144,10 +209,14 @@ func Enabled() []Source {
 	return out
 }
 
+// ErrAllFeedsFailed is returned by FetchAll when no enabled feed produced a
+// result, so the caller can tell "the feeds are down" from "the feeds are empty".
+var ErrAllFeedsFailed = errors.New("every enabled feed failed")
+
 // FetchAll pulls the latest phishing URLs from every enabled source
 // concurrently. Each source tags its URLs with its own Name so provenance is
-// preserved. A feed that errors is skipped (its goroutine returns nothing)
-// rather than failing the whole fetch.
+// preserved. A feed that errors is reported on stderr and skipped rather than
+// failing the whole fetch; only when every feed fails is an error returned.
 func FetchAll() ([]PhishUrls, error) {
 	enabled := Enabled()
 
@@ -155,13 +224,19 @@ func FetchAll() ([]PhishUrls, error) {
 	out := make([]PhishUrls, 0)
 
 	var wg sync.WaitGroup
+	var failMu sync.Mutex
+	failed := 0
 	for _, s := range enabled {
 		wg.Add(1)
-		fetch := s.Fetch
+		src := s
 		go func() {
 			defer wg.Done()
-			resp, err := fetch()
+			resp, err := src.Fetch()
 			if err != nil {
+				fmt.Fprintf(os.Stderr, "warning: feed %s failed: %s\n", src.Name, err)
+				failMu.Lock()
+				failed++
+				failMu.Unlock()
 				return
 			}
 			for _, r := range resp {
@@ -179,5 +254,8 @@ func FetchAll() ([]PhishUrls, error) {
 		out = append(out, u)
 	}
 
+	if len(enabled) > 0 && failed == len(enabled) {
+		return nil, ErrAllFeedsFailed
+	}
 	return out, nil
 }

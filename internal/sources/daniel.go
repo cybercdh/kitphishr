@@ -1,10 +1,8 @@
 package sources
 
 import (
-	"bufio"
+	"errors"
 	"fmt"
-	"net/http"
-	"strings"
 	"time"
 )
 
@@ -29,33 +27,23 @@ func getDanielKitURLs() ([]PhishUrls, error) {
 	if pm == 0 {
 		py, pm = y-1, 12
 	}
-	client := &http.Client{Timeout: 30 * time.Second}
+	var errs []error
 	for _, m := range [][2]int{{y, mo}, {py, pm}} {
 		feed := fmt.Sprintf(
 			"https://raw.githubusercontent.com/0xDanielLopez/phishing_kits/master/%04d/%04d%02d/urls.txt",
 			m[0], m[0], m[1],
 		)
-		req, err := http.NewRequest("GET", feed, nil)
+		rows, err := feedLines(feed, "0xdaniel-kits")
 		if err != nil {
+			// The current month's file may not exist yet early in the month; a
+			// 404 for one of the two is normal, so only fail if both are missing.
+			errs = append(errs, err)
 			continue
 		}
-		req.Header.Set("User-Agent", "kitphishr/1.0")
-		res, err := client.Do(req)
-		if err != nil {
-			continue
-		}
-		if res.StatusCode != 200 {
-			res.Body.Close()
-			continue
-		}
-		sc := bufio.NewScanner(res.Body)
-		for sc.Scan() {
-			u := strings.TrimSpace(sc.Text())
-			if u != "" {
-				out = append(out, PhishUrls{URL: u, Source: "0xdaniel-kits"})
-			}
-		}
-		res.Body.Close()
+		out = append(out, rows...)
+	}
+	if len(errs) == 2 {
+		return nil, errors.Join(errs...)
 	}
 	return out, nil
 }
