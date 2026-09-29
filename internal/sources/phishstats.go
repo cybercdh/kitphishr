@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
-	"time"
 )
 
 // getPhishStatsInfo pulls the newest phishing URLs from PhishStats' JSON API.
@@ -16,22 +14,19 @@ import (
 func getPhishStatsInfo() ([]PhishUrls, error) {
 	const phishStatsPages = 5 // 100 rows/page → up to ~500 newest URLs
 
-	client := &http.Client{Timeout: 30 * time.Second}
 	out := make([]PhishUrls, 0)
+	var lastErr error
 	for page := 1; page <= phishStatsPages; page++ {
 		feed := fmt.Sprintf("https://api.phishstats.info/api/phishing?_size=100&_sort=-id&_p=%d", page)
-		req, err := http.NewRequest("GET", feed, nil)
+		rc, err := feedGet(feed, "application/json")
 		if err != nil {
+			lastErr = err
 			break
 		}
-		req.Header.Set("User-Agent", "kitphishr/1.0")
-		res, err := client.Do(req)
+		body, err := io.ReadAll(rc)
+		rc.Close()
 		if err != nil {
-			break
-		}
-		body, err := io.ReadAll(res.Body)
-		res.Body.Close()
-		if err != nil {
+			lastErr = err
 			break
 		}
 		// The API row is far richer than a bare URL — keep the fields that help
@@ -51,6 +46,7 @@ func getPhishStatsInfo() ([]PhishUrls, error) {
 			Date         string   `json:"date"`
 		}
 		if err := json.Unmarshal(body, &rows); err != nil {
+			lastErr = err
 			break
 		}
 		for _, r := range rows {
@@ -77,6 +73,11 @@ func getPhishStatsInfo() ([]PhishUrls, error) {
 		if len(rows) < 100 {
 			break // reached the end of the feed
 		}
+	}
+	// A first-page failure means the feed is down; a later-page failure still
+	// leaves usable rows, so only surface the error when nothing came back.
+	if len(out) == 0 && lastErr != nil {
+		return nil, lastErr
 	}
 	return out, nil
 }

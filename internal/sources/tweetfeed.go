@@ -3,7 +3,6 @@ package sources
 import (
 	"encoding/csv"
 	"io"
-	"net/http"
 	"strings"
 )
 
@@ -18,12 +17,12 @@ import (
 // License: CC0 1.0 (public domain) — reuse freely, no attribution required.
 func getTweetFeedURLs() ([]PhishUrls, error) {
 	const feed = "https://raw.githubusercontent.com/0xDanielLopez/TweetFeed/master/week.csv"
-	res, err := http.Get(feed)
+	rc, err := feedGet(feed, "")
 	if err != nil {
 		return []PhishUrls{}, err
 	}
-	defer res.Body.Close()
-	return parseTweetFeedCSV(res.Body)
+	defer rc.Close()
+	return parseTweetFeedCSV(rc)
 }
 
 // parseTweetFeedCSV is split out so the filtering logic is unit-testable

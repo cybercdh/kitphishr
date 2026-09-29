@@ -3,8 +3,6 @@ package sources
 import (
 	"encoding/json"
 	"io"
-	"net/http"
-	"time"
 )
 
 // getPhishuntFeed pulls phishunt.io's live JSON feed (~300 active phishing
@@ -21,19 +19,12 @@ import (
 func getPhishuntFeed() ([]PhishUrls, error) {
 	const feed = "https://phishunt.io/feed.json"
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	req, err := http.NewRequest("GET", feed, nil)
+	rc, err := feedGet(feed, "application/json")
 	if err != nil {
 		return []PhishUrls{}, err
 	}
-	req.Header.Set("User-Agent", "kitphishr/1.0")
-	req.Header.Set("Accept", "application/json")
-	res, err := client.Do(req)
-	if err != nil {
-		return []PhishUrls{}, err
-	}
-	defer res.Body.Close()
-	body, err := io.ReadAll(res.Body)
+	defer rc.Close()
+	body, err := io.ReadAll(rc)
 	if err != nil {
 		return []PhishUrls{}, err
 	}

@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path"
+	"path/filepath"
 	"time"
 
 	"github.com/cybercdh/kitphishr/internal/analyze"
@@ -46,7 +46,7 @@ func (r Response) SaveResponse(idx *Index, outputDir string) (savedPath string, 
 	}
 
 	ext := extensionFromURL(r.URL)
-	target := path.Join(outputDir, sha+ext)
+	target := filepath.Join(outputDir, sha+ext)
 
 	// guard against the (extremely unlikely) race where two workers compute
 	// the same sha simultaneously: O_EXCL means the second one bails.
@@ -91,13 +91,13 @@ func (r Response) SaveResponse(idx *Index, outputDir string) (savedPath string, 
 // meaningless downstream, but the filename tells the analyzer which sibling
 // object is the archive. Best-effort — errors are logged, never fatal.
 func writeCaptureJSON(rec IndexRecord, outputDir string) {
-	rec.SavedPath = path.Base(rec.SavedPath)
+	rec.SavedPath = filepath.Base(rec.SavedPath)
 	out, err := json.Marshal(rec)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "capture-json: encode %s: %s\n", rec.SHA256, err)
 		return
 	}
-	capPath := path.Join(outputDir, rec.SHA256+".capture.json")
+	capPath := filepath.Join(outputDir, rec.SHA256+".capture.json")
 	if err := os.WriteFile(capPath, out, 0640); err != nil {
 		fmt.Fprintf(os.Stderr, "capture-json: write %s: %s\n", capPath, err)
 	}
@@ -139,7 +139,7 @@ func writeKitJSON(rec IndexRecord, savedPath, outputDir string) {
 		fmt.Fprintf(os.Stderr, "kit-json: encode %s: %s\n", rec.SHA256, err)
 		return
 	}
-	kitPath := path.Join(outputDir, rec.SHA256+".kit.json")
+	kitPath := filepath.Join(outputDir, rec.SHA256+".kit.json")
 	if err := os.WriteFile(kitPath, out, 0640); err != nil {
 		fmt.Fprintf(os.Stderr, "kit-json: write %s: %s\n", kitPath, err)
 	}

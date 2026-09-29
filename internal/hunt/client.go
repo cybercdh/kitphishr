@@ -39,6 +39,12 @@ func MakeClient(timeoutSecs int, blockInternal bool) *http.Client {
 	tr := &http.Transport{
 		Proxy:           proxyURL,
 		MaxConnsPerHost: 50,
+		// Default MaxIdleConnsPerHost is 2, so with 50 workers hitting one host
+		// most connections were torn down after a single request and every
+		// probe paid a fresh TLS handshake. Keep the whole pool reusable.
+		MaxIdleConns:        200,
+		MaxIdleConnsPerHost: 50,
+		IdleConnTimeout:     90 * time.Second,
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: true,
 			Renegotiation:      tls.RenegotiateOnceAsClient,
@@ -94,9 +100,10 @@ func isUnreachableErr(err error) bool {
 	return false
 }
 
-// AttemptTarget performs a request against url. For URLs ending in .zip it
-// HEADs first to avoid downloading large non-zip bodies; if the probe looks
-// archive-shaped it then GETs. Per-host rate limiting and retry-with-backoff
+// AttemptTarget performs a request against url. For URLs that end in an
+// archive extension (any case, query string ignored) it HEADs first to avoid
+// downloading large non-archive bodies; if the probe looks archive-shaped it
+// then GETs. Per-host rate limiting and retry-with-backoff
 // are applied to every network call. If the host has previously been seen
 // as unreachable in this run, the call short-circuits with ErrHostDead.
 func AttemptTarget(ctx context.Context, client *http.Client, limiter *HostRateLimiter, target sources.PhishUrls) (Response, error) {
@@ -106,7 +113,7 @@ func AttemptTarget(ctx context.Context, client *http.Client, limiter *HostRateLi
 		return Response{}, fmt.Errorf("%w: %s", ErrHostDead, host)
 	}
 
-	if strings.HasSuffix(target.URL, ".zip") {
+	if hasArchiveExtension(target.URL) {
 		if err := limiter.Wait(ctx, host); err != nil {
 			return Response{}, err
 		}
