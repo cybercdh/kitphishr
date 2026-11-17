@@ -1,6 +1,7 @@
 package analyze
 
 import (
+	"bytes"
 	"regexp"
 	"strings"
 )
@@ -61,6 +62,14 @@ func looksLikeFalsePositiveAuthor(s string) bool {
 // pre-allocated by the caller. Captures are lower-cased for dedup so
 // "Phisher" and "phisher" collapse to one entry.
 func scanAuthorsInto(content []byte, authors, icqHandles, skypeHandles map[string]struct{}) {
+	scanAuthorsLowered(content, bytes.ToLower(content), authors, icqHandles, skypeHandles)
+}
+
+// scanAuthorsLowered is scanAuthorsInto with a caller-supplied lower-cased copy
+// of content. Each pattern needs its keyword present, and case-insensitive
+// regexps get no literal-prefix speedup, so a substring check on lowered skips
+// the regex on the (vast majority of) files that cannot match.
+func scanAuthorsLowered(content, lowered []byte, authors, icqHandles, skypeHandles map[string]struct{}) {
 	addAuthor := func(s string) {
 		s = strings.TrimSpace(s)
 		if s == "" {
@@ -72,20 +81,29 @@ func scanAuthorsInto(content []byte, authors, icqHandles, skypeHandles map[strin
 		}
 		authors[lower] = struct{}{}
 	}
-	for _, m := range codedByPattern.FindAllSubmatch(content, -1) {
-		if len(m) > 1 {
-			addAuthor(string(m[1]))
+	if bytes.Contains(lowered, []byte("by")) {
+		for _, m := range codedByPattern.FindAllSubmatch(content, -1) {
+			if len(m) > 1 {
+				addAuthor(string(m[1]))
+			}
 		}
 	}
-	for _, m := range authorTagPattern.FindAllSubmatch(content, -1) {
-		if len(m) > 1 {
-			addAuthor(string(m[1]))
+	if bytes.Contains(lowered, []byte("author")) {
+		for _, m := range authorTagPattern.FindAllSubmatch(content, -1) {
+			if len(m) > 1 {
+				addAuthor(string(m[1]))
+			}
 		}
 	}
-	for _, m := range icqHandlePattern.FindAllSubmatch(content, -1) {
-		if len(m) > 1 {
-			icqHandles[string(m[1])] = struct{}{}
+	if bytes.Contains(lowered, []byte("icq")) {
+		for _, m := range icqHandlePattern.FindAllSubmatch(content, -1) {
+			if len(m) > 1 {
+				icqHandles[string(m[1])] = struct{}{}
+			}
 		}
+	}
+	if !bytes.Contains(lowered, []byte("skype")) {
+		return
 	}
 	for _, m := range skypeHandlePattern.FindAllSubmatch(content, -1) {
 		if len(m) > 1 {

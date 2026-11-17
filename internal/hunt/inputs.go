@@ -160,11 +160,15 @@ type ScanStats struct {
 	// "reached, no kit found" and report an accurate outcome to the submitter.
 	DeadHosts int            `json:"dead_hosts"`
 	BySource  map[string]int `json:"by_source"`
+	// ByGuess is probes / kits found per target kind ("feed", "path",
+	// "slash", "ext-upN", "word-upN", "opendir-via-<kind>"), the data for
+	// pruning low-yield guesses.
+	ByGuess map[string]GuessStat `json:"by_guess,omitempty"`
 }
 
 // WriteScanStats writes the per-run scan-stats.json. bySource maps each source
 // feed to the count of distinct feed URLs probed from it this run.
-func WriteScanStats(path string, bySource map[string]int, scannedTotal, found, saved, deadHosts int) error {
+func WriteScanStats(path string, bySource map[string]int, byGuess map[string]GuessStat, scannedTotal, found, saved, deadHosts int) error {
 	if bySource == nil {
 		bySource = map[string]int{}
 	}
@@ -175,6 +179,7 @@ func WriteScanStats(path string, bySource map[string]int, scannedTotal, found, s
 		Saved:        saved,
 		DeadHosts:    deadHosts,
 		BySource:     bySource,
+		ByGuess:      byGuess,
 	}
 	data, err := json.Marshal(stats)
 	if err != nil {

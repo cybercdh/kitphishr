@@ -45,7 +45,6 @@ func TestGenerateTargets_PathTraversalAndZipGuess(t *testing.T) {
 		"http://example.com/foo/bar/",
 		"http://example.com/foo/bar.zip",
 		"http://example.com/foo/bar/login.php",
-		"http://example.com/foo/bar/login.php/",
 		"http://example.com/foo/bar/login.php.zip",
 	}
 	sort.Strings(want)
@@ -896,7 +895,7 @@ func TestWriteCaptureJSON(t *testing.T) {
 // reached" from "reached, no kit found" when reporting back to the submitter.
 func TestWriteScanStatsDeadHosts(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "scan-stats.json")
-	if err := WriteScanStats(path, map[string]int{"stdin": 1}, 3, 0, 0, 2); err != nil {
+	if err := WriteScanStats(path, map[string]int{"stdin": 1}, nil, 3, 0, 0, 2); err != nil {
 		t.Fatalf("WriteScanStats: %v", err)
 	}
 	data, err := os.ReadFile(path)

@@ -5,6 +5,8 @@ import (
 	"context"
 	"net/url"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/andrew-d/go-termutil"
@@ -96,6 +98,71 @@ guess for each (word, ext) pair. e.g. for /foo/bar with wordlist
 	... (and similarly for /foo and /)
 */
 func GenerateTargets(ctx context.Context, urls []sources.PhishUrls, wordlist []string, extensions []string) chan sources.PhishUrls {
+	return GenerateTrackedTargets(ctx, urls, wordlist, extensions, nil, TargetOptions{})
+}
+
+// TargetOptions tunes target generation.
+type TargetOptions struct {
+	// WordlistLevels limits wordlist guessing to the N directories nearest
+	// the feed URL (1 = only the directory holding the phishing page).
+	// 0 = every directory up to the web root.
+	WordlistLevels int
+	// ActiveHosts bounds how many hosts are interleaved at once. Each active
+	// host gets one target per round; when its queue drains the next host is
+	// admitted. Bounding the set keeps each host's keep-alive connection warm
+	// between probes (round-robin over tens of thousands of hosts revisits a
+	// host only after its idle connection is long gone). 0 = all hosts.
+	ActiveHosts int
+	// OnPlanned, if set, receives the total number of targets once they are
+	// all generated and before the first is emitted (for progress / ETA).
+	OnPlanned func(total int)
+}
+
+// webFileExts are extensions that mark the LAST segment of a feed URL as a
+// file rather than a directory. Probing "<file>/" or "<file>/<word>.zip" is
+// pointless: servers answer with the file itself (PATH_INFO) or a 404.
+// Deliberately web-file types only, so a directory named like a domain
+// ("/secure.paypal.com") is still treated as a directory.
+var webFileExts = map[string]bool{
+	"php": true, "php5": true, "phtml": true, "html": true, "htm": true, "shtml": true,
+	"asp": true, "aspx": true, "jsp": true, "cgi": true, "pl": true, "js": true,
+	"css": true, "png": true, "jpg": true, "jpeg": true, "gif": true, "svg": true,
+	"ico": true, "txt": true, "xml": true, "json": true, "pdf": true,
+	"zip": true, "rar": true, "7z": true, "gz": true, "tgz": true,
+}
+
+func looksLikeWebFile(segment string) bool {
+	i := strings.LastIndexByte(segment, '.')
+	if i < 0 || i == len(segment)-1 {
+		return false
+	}
+	return webFileExts[strings.ToLower(segment[i+1:])]
+}
+
+// kindPriority orders a host's queue so the likeliest finds go first, which
+// matters when a run is cut short by -timeout: the feed URL itself (often a
+// direct kit link), then path / trailing-slash probes (which also reveal open
+// directories), then ${path}.zip guesses, then wordlist guesses nearest the
+// phishing page first.
+func kindPriority(kind string) int {
+	switch {
+	case kind == "feed":
+		return 0
+	case kind == "path" || kind == "slash":
+		return 1
+	case strings.HasPrefix(kind, "ext-"):
+		return 2
+	case strings.HasPrefix(kind, "word-up"):
+		n, _ := strconv.Atoi(strings.TrimPrefix(kind, "word-up"))
+		return 3 + n
+	}
+	return 100
+}
+
+// GenerateTrackedTargets is GenerateTargets that also tells tracker how many
+// targets each origin owns, so the caller can learn when a feed URL has been
+// fully explored. A nil tracker disables tracking.
+func GenerateTrackedTargets(ctx context.Context, urls []sources.PhishUrls, wordlist []string, extensions []string, tracker *OriginTracker, opts TargetOptions) chan sources.PhishUrls {
 	out := make(chan sources.PhishUrls, 128)
 	go func() {
 		defer close(out)
@@ -109,7 +176,7 @@ func GenerateTargets(ctx context.Context, urls []sources.PhishUrls, wordlist []s
 		// idle. Round-robin keeps every host's queue active in parallel.
 		hostQueues := make(map[string][]sources.PhishUrls)
 		hostOrder := []string{}
-		add := func(u, source, origin string, intel *sources.SourceIntel) {
+		add := func(u, kind string, row sources.PhishUrls) {
 			if seen[u] {
 				return
 			}
@@ -118,23 +185,34 @@ func GenerateTargets(ctx context.Context, urls []sources.PhishUrls, wordlist []s
 			if _, exists := hostQueues[h]; !exists {
 				hostOrder = append(hostOrder, h)
 			}
-			hostQueues[h] = append(hostQueues[h], sources.PhishUrls{URL: u, Source: source, Origin: origin, Intel: intel})
+			hostQueues[h] = append(hostQueues[h], sources.PhishUrls{URL: u, Source: row.Source, Origin: row.Origin, Intel: row.Intel, Kind: kind})
+			tracker.add(row.Origin)
 		}
 
 		for _, row := range urls {
+			tracker.register(row.Origin)
 			u, err := url.Parse(row.URL)
 			if err != nil {
 				continue
 			}
 			paths := strings.Split(u.Path, "/")
+			wordLevel := 0 // directories given wordlist guesses so far, nearest first
+			prevDir := ""
 			for i := 0; i < len(paths); i++ {
 				_path := paths[:len(paths)-i]
 				tmp_url := u.Scheme + "://" + u.Host + strings.Join(_path, "/")
+				// Only the feed URL's own last segment can be a file; every
+				// shorter prefix has a child, so it is a directory.
+				isFile := i == 0 && looksLikeWebFile(_path[len(_path)-1])
 
-				add(tmp_url, row.Source, row.Origin, row.Intel)
+				kind := "path"
+				if i == 0 {
+					kind = "feed"
+				}
+				add(tmp_url, kind, row)
 
-				if !strings.HasSuffix(tmp_url, "/") {
-					add(tmp_url+"/", row.Source, row.Origin, row.Intel)
+				if !strings.HasSuffix(tmp_url, "/") && !isFile {
+					add(tmp_url+"/", "slash", row)
 				}
 
 				for _, ext := range extensions {
@@ -142,42 +220,76 @@ func GenerateTargets(ctx context.Context, urls []sources.PhishUrls, wordlist []s
 					if strings.HasSuffix(guess, "/."+ext) || strings.Count(guess, "/") < 3 {
 						continue
 					}
-					add(guess, row.Source, row.Origin, row.Intel)
+					add(guess, "ext-up"+strconv.Itoa(i), row)
 				}
 
+				if isFile {
+					continue
+				}
 				dirBase := tmp_url
 				if !strings.HasSuffix(dirBase, "/") {
 					dirBase += "/"
 				}
-				if strings.Count(dirBase, "/") < 3 {
+				// "/a/b/" and its prefix "/a/b" name the same directory.
+				if strings.Count(dirBase, "/") < 3 || dirBase == prevDir {
 					continue
 				}
+				prevDir = dirBase
+				level := wordLevel
+				wordLevel++
+				if opts.WordlistLevels > 0 && level >= opts.WordlistLevels {
+					continue
+				}
+				kind = "word-up" + strconv.Itoa(level)
 				for _, word := range wordlist {
 					for _, ext := range extensions {
-						add(dirBase+word+"."+ext, row.Source, row.Origin, row.Intel)
+						add(dirBase+word+"."+ext, kind, row)
 					}
 				}
 			}
 		}
 
-		// Round-robin emit: one URL per host per round until all queues
-		// are drained. This maximises parallelism across hosts.
-		for {
-			anySent := false
-			for _, h := range hostOrder {
+		tracker.seal()
+
+		total := 0
+		for _, h := range hostOrder {
+			q := hostQueues[h]
+			sort.SliceStable(q, func(a, b int) bool { return kindPriority(q[a].Kind) < kindPriority(q[b].Kind) })
+			total += len(q)
+		}
+		if opts.OnPlanned != nil {
+			opts.OnPlanned(total)
+		}
+
+		// Round-robin emit over a window of active hosts: one URL per host
+		// per round, admitting the next host as each one drains. This keeps
+		// many hosts in flight in parallel while revisiting each soon enough
+		// to reuse its connection.
+		window := opts.ActiveHosts
+		if window <= 0 || window > len(hostOrder) {
+			window = len(hostOrder)
+		}
+		active := append([]string(nil), hostOrder[:window]...)
+		next := window
+		for len(active) > 0 {
+			kept := active[:0]
+			for _, h := range active {
 				q := hostQueues[h]
-				if len(q) == 0 {
-					continue
-				}
 				if !sendTarget(ctx, out, q[0]) {
 					return
 				}
-				hostQueues[h] = q[1:]
-				anySent = true
+				if len(q) > 1 {
+					hostQueues[h] = q[1:]
+					kept = append(kept, h)
+					continue
+				}
+				delete(hostQueues, h) // drained: free it and admit the next host
+				if next < len(hostOrder) {
+					kept = append(kept, hostOrder[next])
+					next++
+				}
 			}
-			if !anySent {
-				return
-			}
+			active = kept
 		}
 	}()
 	return out
