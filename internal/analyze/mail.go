@@ -1,6 +1,7 @@
 package analyze
 
 import (
+	"bytes"
 	"regexp"
 	"strings"
 )
@@ -38,23 +39,51 @@ var (
 		`(?i)->\s*(?:addAddress|addCC|addBCC|setFrom)\s*\(\s*([^,)]+?)\s*[,)]`)
 	phpMailerUserPattern = regexp.MustCompile(
 		`(?i)->\s*Username\s*=\s*([^;]+?)\s*;`)
+	// assignmentPattern captures every `$name = "literal"` in one pass, so a
+	// file with N mail sinks is scanned for assignments once, not N times.
+	assignmentPattern = regexp.MustCompile(
+		`(\$[A-Za-z0-9_]+)\s*=\s*["']([^"']*)["']`)
 )
 
 // scanMailDropsInto finds confirmed mail-exfil recipients in content
 // and adds them to drops. Variable references are resolved against
 // assignments in the same content (per-file scope).
 func scanMailDropsInto(content []byte, drops map[string]struct{}) {
-	patterns := []*regexp.Regexp{
-		mailCallPattern,           // mail() / wp_mail() / mb_send_mail()
-		phpMailerRecipientPattern, // ->addAddress/addCC/addBCC/setFrom(...)
-		phpMailerUserPattern,      // ->Username = ...
+	scanMailDropsLowered(content, bytes.ToLower(content), drops)
+}
+
+// scanMailDropsLowered is scanMailDropsInto with a caller-supplied lower-cased
+// copy of content, used to skip each sink regex when its keyword is absent.
+func scanMailDropsLowered(content, lowered []byte, drops map[string]struct{}) {
+	sinks := []struct {
+		keyword string
+		re      *regexp.Regexp
+	}{
+		{"mail", mailCallPattern},          // mail() / wp_mail() / mb_send_mail()
+		{"->", phpMailerRecipientPattern},  // ->addAddress/addCC/addBCC/setFrom(...)
+		{"username", phpMailerUserPattern}, // ->Username = ...
 	}
-	for _, p := range patterns {
-		for _, m := range p.FindAllSubmatch(content, -1) {
+	var assigns map[string][]string // built lazily on the first $var argument
+	resolved := make(map[string]struct{})
+	for _, sink := range sinks {
+		if !bytes.Contains(lowered, []byte(sink.keyword)) {
+			continue
+		}
+		for _, m := range sink.re.FindAllSubmatch(content, -1) {
 			if len(m) < 2 {
 				continue
 			}
-			resolveMailArg(content, strings.TrimSpace(string(m[1])), drops)
+			arg := strings.TrimSpace(string(m[1]))
+			// The same sink argument repeated N times resolves identically;
+			// resolve it once per file.
+			if _, done := resolved[arg]; done {
+				continue
+			}
+			resolved[arg] = struct{}{}
+			if assigns == nil && strings.HasPrefix(arg, "$") {
+				assigns = collectAssignments(content)
+			}
+			resolveMailArg(assigns, arg, drops)
 		}
 	}
 }
@@ -63,7 +92,7 @@ func scanMailDropsInto(content []byte, drops map[string]struct{}) {
 // a "..."/'...' literal directly, or a $var resolved against same-file string
 // assignments (e.g. `$to = "drop@bad.com"; mail($to, ...)` or PHPMailer's
 // `$m->addAddress($to)`).
-func resolveMailArg(content []byte, arg string, drops map[string]struct{}) {
+func resolveMailArg(assigns map[string][]string, arg string, drops map[string]struct{}) {
 	if arg == "" {
 		return
 	}
@@ -76,7 +105,7 @@ func resolveMailArg(content []byte, arg string, drops map[string]struct{}) {
 		if varName == "" {
 			return
 		}
-		for _, val := range findAssignments(content, varName) {
+		for _, val := range assigns[varName] {
 			addIfMailDrop(val, drops)
 		}
 	}
@@ -134,16 +163,19 @@ func variableHead(s string) string {
 	return s[:end]
 }
 
-// findAssignments returns the set of string-literal values assigned to
-// varName anywhere in content. e.g. for varName="$to" and content
-// containing `$to = "drop@bad.com";`, returns ["drop@bad.com"].
-func findAssignments(content []byte, varName string) []string {
-	re := regexp.MustCompile(regexp.QuoteMeta(varName) + `\s*=\s*["']([^"']*)["']`)
-	var out []string
-	for _, m := range re.FindAllSubmatch(content, -1) {
-		if len(m) > 1 {
-			out = append(out, string(m[1]))
+// collectAssignments maps every variable name to the string-literal values
+// assigned to it in content. e.g. `$to = "drop@bad.com";` yields
+// {"$to": ["drop@bad.com"]}.
+func collectAssignments(content []byte) map[string][]string {
+	out := make(map[string][]string)
+	seen := make(map[[2]string]struct{})
+	for _, m := range assignmentPattern.FindAllSubmatch(content, -1) {
+		k := [2]string{string(m[1]), string(m[2])}
+		if _, dup := seen[k]; dup {
+			continue
 		}
+		seen[k] = struct{}{}
+		out[k[0]] = append(out[k[0]], k[1])
 	}
 	return out
 }

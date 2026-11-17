@@ -53,6 +53,17 @@ Each saved kit appends a JSONL record to `kits/index.jsonl`:
 
 Identical kits captured at different URLs are deduplicated by SHA256 — one file on disk, N entries in the index.
 
+With `-d`, each run also writes `scan-stats.json`, including `by_guess`: probes sent and kit URLs found per kind of guess (`feed`, `path`, `slash`, `ext-upN`, `word-upN` where N is directories above the phishing page, and `opendir-via-<kind>` for kits found in a directory listing). Use it to decide which guesses are worth their requests, e.g. with `-wordlist-levels`.
+
+### Resuming between runs
+
+kitphishr carries on where earlier runs left off, using state kept in the output directory:
+
+- `scan-history.jsonl` — feed URLs whose every generated target was probed. They are skipped for `-rescan-after` (default 24h), and archive URLs already in `index.jsonl` from that window are not downloaded again. A URL is recorded only once it is fully explored, as it completes, so Ctrl-C, `-timeout` or a crash loses at most the work in flight; partly-scanned URLs are retried next run.
+- `dead-hosts.jsonl` — hosts found unreachable, skipped for `-dead-host-ttl` (default 6h).
+
+Expired entries are pruned automatically. Use `-rescan-after 0 -dead-host-ttl 0` to scan everything from scratch (e.g. after a run made while your own network was down).
+
 ## Sources
 
 kitphishr pulls candidate URLs from the open-source phishing feeds below. Each feed is declared in [`internal/sources`](./internal/sources) with its provenance tag, homepage, and license; the table is generated from that registry and verified in CI, so it always reflects the feeds that are actually enabled.
@@ -77,7 +88,7 @@ kitphishr pulls candidate URLs from the open-source phishing feeds below. Each f
 
 | Flag | Default | Description |
 |---|---|---|
-| `-c <int>` | `50` | concurrency level |
+| `-c <int>` | `200` | concurrency level (parallel requests). Hosts are interleaved in a window of 4×`-c`, so each host sees only a few requests at a time. Scales roughly linearly to 800+ if your bandwidth and DNS resolver keep up |
 | `-d` | off | download suspected kits to disk |
 | `-o <dir>` | `kits` | output directory |
 | `-t <int>` | `45` | connection timeout in seconds |
@@ -86,6 +97,7 @@ kitphishr pulls candidate URLs from the open-source phishing feeds below. Each f
 | `-rps <float>` | `10.0` | per-host request rate limit (requests per second; `0` = unlimited) |
 | `-burst <int>` | `20` | per-host burst capacity for the rate limiter |
 | `-wordlist <path>` | (built-in) | archive-name wordlist; pass `/dev/null` to disable wordlist guessing |
+| `-wordlist-levels <int>` | `0` (all) | only guess wordlist names in the N directories nearest each feed URL (`1` = the phishing page's own directory). Check `by_guess` in `scan-stats.json` to see which levels actually find kits before trimming |
 | `-extensions <list>` | `zip` | archive extensions to guess (e.g. `zip,tar.gz,rar,7z`) |
 | `-feeds` | off | always fetch URLs from the built-in threat-intel feeds (for scheduled / containerised runs with no stdin) |
 | `-progress <dur>` | `30s` | interval between progress reports to stderr (`0` to disable) |
@@ -93,7 +105,9 @@ kitphishr pulls candidate URLs from the open-source phishing feeds below. Each f
 | `-known-hashes <path>` | (none) | file of sha256s (one per line) to pre-seed the dedup index; matching captures get a dedup record but are not re-saved (cross-run capture dedup) |
 | `-kit-json` | off | for each saved kit, also write `<sha>.kit.json` (capture metadata + analysis) for event-driven ingestion (requires `-d`) |
 | `-capture-json` | off | for each saved kit, also write `<sha>.capture.json` (capture metadata **only**, no analysis) so analysis can run elsewhere, e.g. an event-driven analyzer (requires `-d`) |
-| `-scanned-urls <path>` | (none) | file of feed URLs (one per line) scanned within the dedup window; matching feed URLs are skipped (not re-explored/re-probed), and the URLs actually probed are written to `<output-dir>/scanned-urls.txt` (cross-run scan dedup) |
+| `-rescan-after <dur>` | `24h` | skip feed URLs fully scanned by an earlier run within this window, and don't re-download archive URLs captured within it (see [Resuming between runs](#resuming-between-runs)); `0` = always scan from scratch |
+| `-dead-host-ttl <dur>` | `6h` | skip hosts an earlier run found unreachable within this window; `0` = don't remember dead hosts |
+| `-scanned-urls <path>` | (none) | file of feed URLs (one per line) scanned within an externally-managed dedup window; matching feed URLs are skipped (not re-explored/re-probed), and the feed URLs fully explored this run are written to `<output-dir>/scanned-urls.txt` (cross-run scan dedup for orchestrated deployments; combines with `-rescan-after`) |
 | `-block-internal` | **on** | SSRF guard: resolve every target (and every redirect hop) and refuse to connect to any non-globally-routable address (loopback, RFC1918, link-local/IMDS, CGNAT, etc). On by default; pass `-block-internal=false` to allow internal targets (e.g. scanning a trusted lab) |
 | `-source <string>` | (feed name / `stdin`) | override the recorded source label for every kit captured this run; tags the provenance of on-demand scans (e.g. a user submission) |
 
@@ -103,6 +117,7 @@ kitphishr pulls candidate URLs from the open-source phishing feeds below. Each f
 |---|---|---|
 | `-o <path>` | `-` (stdout) | output destination |
 | `-brands <path>` | (built-in) | JSON file of brand signatures (see `internal/analyze/brands.go` for the default list and schema) |
+| `-c <int>` | number of CPUs | kits to analyse in parallel (output order is preserved) |
 
 Targets can be passed as arguments or piped via stdin.
 

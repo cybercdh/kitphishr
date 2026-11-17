@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/cybercdh/kitphishr/internal/sources"
@@ -30,15 +31,22 @@ allow redirects, skip ssl warnings, set timeouts.
 func MakeClient(timeoutSecs int, blockInternal bool) *http.Client {
 	proxyURL := http.ProxyFromEnvironment
 	timeout := time.Second * time.Duration(timeoutSecs)
-	dial := (&net.Dialer{Timeout: timeout}).DialContext
+	// -t is the budget for a whole request INCLUDING a large kit download. The
+	// connect / handshake / first-byte phases get much tighter caps: a
+	// tarpitting host that accepts the socket and then stalls would otherwise
+	// hold a worker for the full -t on every one of its generated targets.
+	connectTimeout := minDuration(phaseConnectTimeout, timeout)
+	dial := (&net.Dialer{Timeout: connectTimeout}).DialContext
 	if blockInternal {
 		// Swap in the SSRF-guarding dialer. net/http calls DialContext for the
 		// initial request and every redirect hop, so this covers redirects too.
-		dial = guardedDialContext(timeout)
+		dial = guardedDialContext(connectTimeout)
 	}
 	tr := &http.Transport{
-		Proxy:           proxyURL,
-		MaxConnsPerHost: 50,
+		Proxy:                 proxyURL,
+		TLSHandshakeTimeout:   minDuration(phaseTLSTimeout, timeout),
+		ResponseHeaderTimeout: minDuration(phaseHeaderTimeout, timeout),
+		MaxConnsPerHost:       50,
 		// Default MaxIdleConnsPerHost is 2, so with 50 workers hitting one host
 		// most connections were torn down after a single request and every
 		// probe paid a fresh TLS handshake. Keep the whole pool reusable.
@@ -55,6 +63,21 @@ func MakeClient(timeoutSecs int, blockInternal bool) *http.Client {
 		Transport: tr,
 		Timeout:   timeout,
 	}
+}
+
+// Per-phase timeouts (each capped at -t). Generous for a real server, short
+// enough that a host which never answers costs seconds, not -t.
+const (
+	phaseConnectTimeout = 8 * time.Second
+	phaseTLSTimeout     = 8 * time.Second
+	phaseHeaderTimeout  = 12 * time.Second
+)
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // ErrHostDead is returned when a target's host has already been observed
@@ -74,11 +97,68 @@ var (
 func markHostDead(host string) {
 	if _, loaded := deadHostSet.LoadOrStore(host, struct{}{}); !loaded {
 		deadHostCount.Add(1)
+		if Config.OnHostDead != nil {
+			Config.OnHostDead(host)
+		}
 	}
 }
+
+// SeedDeadHosts pre-marks hosts found unreachable by a recent run. They are
+// skipped like hosts that died this run, but not counted in DeadHostCount
+// (which reports what THIS run observed) nor re-reported via OnHostDead.
+func SeedDeadHosts(hosts map[string]time.Time) {
+	for h := range hosts {
+		deadHostSet.Store(h, struct{}{})
+	}
+}
+
+// ErrRecentlyCaptured is returned for an archive URL that a recent run
+// already saved (see Options.SkipURL), so it is not downloaded again.
+var ErrRecentlyCaptured = errors.New("archive url captured recently")
+
 func isHostMarkedDead(host string) bool {
 	_, ok := deadHostSet.Load(host)
 	return ok
+}
+
+// hostStrikeLimit is how many consecutive stalls (timeouts, resets before any
+// response) a host gets before it is treated as dead for the rest of the run.
+// Tarpits and overloaded hosts never produce a dial error, so without this
+// they were retried on every generated target.
+const hostStrikeLimit = 3
+
+var hostStrikes sync.Map // host -> *atomic.Int32 consecutive stalls
+
+// recordStall counts a request that reached the host but got no response.
+func recordStall(host string) {
+	v, _ := hostStrikes.LoadOrStore(host, new(atomic.Int32))
+	if v.(*atomic.Int32).Add(1) >= hostStrikeLimit {
+		markHostDead(host)
+	}
+}
+
+// recordAlive resets a host's stall count once it answers anything.
+func recordAlive(host string) {
+	if v, ok := hostStrikes.Load(host); ok {
+		v.(*atomic.Int32).Store(0)
+	}
+}
+
+// noteRequestError classifies a client.Do failure for host-health tracking.
+// ctx is the scan context: a failure caused by the whole scan being cancelled
+// or timing out says nothing about the host.
+func noteRequestError(ctx context.Context, host string, err error) {
+	if ctx.Err() != nil {
+		return
+	}
+	if isUnreachableErr(err) {
+		markHostDead(host)
+		return
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		recordStall(host)
+	}
 }
 
 // isUnreachableErr reports whether err means "we couldn't reach the host
@@ -89,15 +169,58 @@ func isUnreachableErr(err error) bool {
 	if err == nil {
 		return false
 	}
+	// Our own machine running out of sockets/ports/fds under high
+	// concurrency also surfaces as a dial error. It says nothing about the
+	// host, and treating it as "dead" silently dropped live hosts (and kits).
+	if isLocalResourceErr(err) {
+		return false
+	}
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
-		return true
+		// Only a definitive "no such host" is permanent. A resolver timeout
+		// or SERVFAIL (common when the local resolver is flooded) is not.
+		return dnsErr.IsNotFound
 	}
 	var opErr *net.OpError
 	if errors.As(err, &opErr) && opErr.Op == "dial" {
+		return !opErr.Timeout()
+	}
+	return false
+}
+
+// isLocalResourceErr reports exhaustion of the scanner's own resources:
+// ephemeral ports (EADDRINUSE / EADDRNOTAVAIL, Windows WSAEADDRINUSE etc.),
+// file descriptors, or socket buffers.
+func isLocalResourceErr(err error) bool {
+	var errno syscall.Errno
+	if !errors.As(err, &errno) {
+		return false
+	}
+	switch errno {
+	case syscall.EADDRINUSE, syscall.EADDRNOTAVAIL, syscall.EMFILE, syscall.ENFILE, syscall.ENOBUFS:
+		return true
+	}
+	// Winsock codes (WSAEMFILE, WSAEADDRINUSE, WSAEADDRNOTAVAIL, WSAENOBUFS),
+	// which the syscall constants above do not cover on Windows.
+	switch uintptr(errno) {
+	case 10024, 10048, 10049, 10055:
 		return true
 	}
 	return false
+}
+
+// TuneForConcurrency sizes the client's idle-connection pool for the number
+// of hosts kept active at once (see TargetOptions.ActiveHosts), so a host's
+// keep-alive connection survives between its probes instead of being evicted
+// and re-dialled (a new TCP + TLS handshake, and a TIME_WAIT port, per probe).
+func TuneForConcurrency(client *http.Client, activeHosts int) {
+	tr, ok := client.Transport.(*http.Transport)
+	if !ok || activeHosts <= 0 {
+		return
+	}
+	if n := activeHosts * 2; n > tr.MaxIdleConns {
+		tr.MaxIdleConns = n
+	}
 }
 
 // AttemptTarget performs a request against url. For URLs that end in an
@@ -111,6 +234,9 @@ func AttemptTarget(ctx context.Context, client *http.Client, limiter *HostRateLi
 
 	if isHostMarkedDead(host) {
 		return Response{}, fmt.Errorf("%w: %s", ErrHostDead, host)
+	}
+	if Config.SkipURL != nil && hasArchiveExtension(target.URL) && Config.SkipURL(target.URL) {
+		return Response{}, fmt.Errorf("%w: %s", ErrRecentlyCaptured, target.URL)
 	}
 
 	if hasArchiveExtension(target.URL) {
@@ -264,6 +390,13 @@ func retryable(statusCode int, err error) bool {
 		if isUnreachableErr(err) {
 			return false
 		}
+		// A connect/handshake/first-byte timeout means the host is stalling;
+		// retrying immediately just doubles the wait. Host-strike tracking
+		// retires it after a few of these instead.
+		var ne net.Error
+		if errors.As(err, &ne) && ne.Timeout() {
+			return false
+		}
 		// transient network errors (read EOF, connection reset mid-body)
 		return true
 	}
@@ -344,12 +477,11 @@ func probeOnce(ctx context.Context, client *http.Client, rawURL string) (Respons
 
 	httpresp, err := client.Do(req)
 	if err != nil {
-		if isUnreachableErr(err) {
-			markHostDead(hostOf(rawURL))
-		}
+		noteRequestError(ctx, hostOf(rawURL), err)
 		return Response{}, err
 	}
 	defer httpresp.Body.Close()
+	recordAlive(hostOf(rawURL))
 
 	return Response{
 		StatusCode:    httpresp.StatusCode,
@@ -369,12 +501,42 @@ func fetchOnce(ctx context.Context, client *http.Client, rawURL string) (Respons
 
 	httpresp, err := client.Do(req)
 	if err != nil {
-		if isUnreachableErr(err) {
-			markHostDead(hostOf(rawURL))
-		}
+		noteRequestError(ctx, hostOf(rawURL), err)
 		return Response{}, err
 	}
 	defer httpresp.Body.Close()
+	recordAlive(hostOf(rawURL))
+
+	final := finalURL(httpresp, rawURL)
+	ct := httpresp.Header.Get("Content-Type")
+
+	// Read only what HandleResponse can use. An archive URL (after redirects)
+	// needs the full body; an HTML page is only ever inspected as a possible
+	// directory listing, which is small; anything else (a video, an image, a
+	// binary served at a guessed path) is never looked at, so don't download it.
+	switch {
+	case hasArchiveExtension(final):
+		// fall through to the full, size-checked read below
+	case strings.Contains(strings.ToLower(ct), "html"):
+		body, err := io.ReadAll(io.LimitReader(httpresp.Body, maxHTMLBodySize))
+		if err != nil {
+			return Response{}, err
+		}
+		return Response{
+			StatusCode:    httpresp.StatusCode,
+			Body:          body,
+			URL:           final,
+			ContentLength: httpresp.ContentLength,
+			ContentType:   ct,
+		}, nil
+	default:
+		return Response{
+			StatusCode:    httpresp.StatusCode,
+			URL:           final,
+			ContentLength: httpresp.ContentLength,
+			ContentType:   ct,
+		}, nil
+	}
 
 	// LimitReader guards against hostile servers that advertise small
 	// content-length but stream gigabytes. +1 lets us detect overflow.

@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -84,6 +85,7 @@ func Run(args []string) {
 	fset := flag.NewFlagSet("analyze", flag.ExitOnError)
 	outputPath := fset.String("o", "-", "output destination (- for stdout)")
 	brandsPath := fset.String("brands", "", "path to a JSON file of brand signatures (built-in default if empty)")
+	workers := fset.Int("c", runtime.NumCPU(), "number of kits to analyse in parallel (output order is preserved)")
 	fset.Usage = func() {
 		fmt.Fprintf(os.Stderr, "usage: kitphishr analyze [flags] <zip-or-dir>...\n")
 		fmt.Fprintf(os.Stderr, "       (or pipe a newline-separated list of paths on stdin)\n\n")
@@ -126,11 +128,40 @@ func Run(args []string) {
 	}
 
 	enc := json.NewEncoder(out)
-	for _, t := range targets {
-		result := AnalyzePath(t, brands)
+	analyzeAll(targets, brands, *workers, func(t string, result AnalyzeResult) {
 		if err := enc.Encode(result); err != nil {
 			fmt.Fprintf(os.Stderr, "failed to write result for %s: %s\n", t, err)
 		}
+	})
+}
+
+// analyzeAll analyses targets on a pool of workers and calls emit for each
+// result in input order, so output is identical to a sequential run. Each
+// kit is independent and CPU-bound (regex scans), so this scales with cores.
+func analyzeAll(targets []string, brands []BrandSignature, workers int, emit func(string, AnalyzeResult)) {
+	if workers < 1 {
+		workers = 1
+	}
+	results := make([]chan AnalyzeResult, len(targets))
+	for i := range results {
+		results[i] = make(chan AnalyzeResult, 1)
+	}
+	jobs := make(chan int)
+	for w := 0; w < workers; w++ {
+		go func() {
+			for i := range jobs {
+				results[i] <- AnalyzePath(targets[i], brands)
+			}
+		}()
+	}
+	go func() {
+		for i := range targets {
+			jobs <- i
+		}
+		close(jobs)
+	}()
+	for i, t := range targets {
+		emit(t, <-results[i])
 	}
 }
 
@@ -386,6 +417,7 @@ func (a *analyzer) scan(content []byte) {
 // vendored library files, whose translator emails / maintainer names / incidental
 // brand mentions are pure false positives, not kit IOCs.
 func (a *analyzer) scanNamed(name string, content []byte) {
+	lowered := bytes.ToLower(content) // shared by the keyword prefilters below
 	for _, m := range telegramBotPattern.FindAll(content, -1) {
 		a.tgBots[string(m)] = struct{}{}
 	}
@@ -397,23 +429,29 @@ func (a *analyzer) scanNamed(name string, content []byte) {
 	for _, m := range discordWebhookPattern.FindAll(content, -1) {
 		a.discords[string(m)] = struct{}{}
 	}
-	scanMailDropsInto(content, a.mailDrops)
+	scanMailDropsLowered(content, lowered, a.mailDrops)
 
 	if isVendoredPath(name) {
 		return // skip the noisy bare-string scans for vendored library files
 	}
 
-	for _, m := range emailIndicatorPattern.FindAll(content, -1) {
-		e := strings.ToLower(string(m))
-		if !looksLikePlaceholderEmail(e) {
-			a.emails[e] = struct{}{}
+	if bytes.IndexByte(content, '@') >= 0 {
+		for _, m := range emailIndicatorPattern.FindAll(content, -1) {
+			e := strings.ToLower(string(m))
+			if !looksLikePlaceholderEmail(e) {
+				a.emails[e] = struct{}{}
+			}
 		}
 	}
-	scanAuthorsInto(content, a.authors, a.icqs, a.skypes)
+	scanAuthorsLowered(content, lowered, a.authors, a.icqs, a.skypes)
 	if len(a.brands) > 0 {
-		lowered := bytes.ToLower(content)
-		scanBrandsInto(lowered, a.brands, a.brandHits, 1)
-		scanBrandsInto(lowered, a.brands, a.brandContentHits, 1)
+		// One pass, credited to both tallies (they score content identically).
+		fileHits := make(map[string]int)
+		scanBrandsInto(lowered, a.brands, fileHits, 1)
+		for b, n := range fileHits {
+			a.brandHits[b] += n
+			a.brandContentHits[b] += n
+		}
 	}
 }
 

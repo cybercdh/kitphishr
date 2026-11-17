@@ -5,6 +5,7 @@ package hunt
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -26,6 +27,9 @@ type Scanner struct {
 
 	found atomic.Uint64
 
+	// Guesses tallies probes and finds per target kind.
+	Guesses *GuessStats
+
 	claimMu sync.Mutex
 	claimed map[string]struct{}
 }
@@ -40,6 +44,7 @@ func NewScanner(client *http.Client, limiter *HostRateLimiter, verbose, download
 		verbose:  verbose,
 		download: download,
 		claimed:  make(map[string]struct{}),
+		Guesses:  NewGuessStats(),
 	}
 }
 
@@ -78,6 +83,7 @@ func (s *Scanner) HandleResponse(ctx context.Context, resp Response, tosave chan
 				return
 			}
 			s.found.Add(1)
+			s.Guesses.Found(resp.Kind)
 			if s.verbose {
 				color.Green.Printf("Zip found from URL folder at %s\n", resp.URL)
 			} else {
@@ -109,6 +115,7 @@ func (s *Scanner) HandleResponse(ctx context.Context, resp Response, tosave chan
 			continue
 		}
 		s.found.Add(1)
+		s.Guesses.Found("opendir-via-" + resp.Kind)
 		if s.verbose {
 			color.Green.Printf("Zip found from Open Directory at %s\n", hurl)
 		} else {
@@ -118,6 +125,12 @@ func (s *Scanner) HandleResponse(ctx context.Context, resp Response, tosave chan
 			continue
 		}
 		fetched, err := AttemptTarget(ctx, s.client, s.limiter, sources.PhishUrls{URL: hurl, Source: resp.Source})
+		if errors.Is(err, ErrRecentlyCaptured) {
+			if s.verbose {
+				color.Yellow.Printf("already captured recently, not re-downloading %s\n", hurl)
+			}
+			continue
+		}
 		if err != nil {
 			if s.verbose {
 				color.Red.Printf("error downloading %s: %s\n", hurl, err)

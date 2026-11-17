@@ -90,6 +90,9 @@ type PhishUrls struct {
 	// feed through to capture.json so the analyzer can use it. nil for feeds
 	// that don't expose it. Rides alongside Source.
 	Intel *SourceIntel `json:"intel,omitempty"`
+	// Kind labels how this target was derived from its feed URL (e.g. "feed",
+	// "path", "ext-up1", "word-up2") for per-guess yield stats. Not serialised.
+	Kind string `json:"-"`
 }
 
 // SourceIntel is optional threat-feed metadata about the URL a kit was captured

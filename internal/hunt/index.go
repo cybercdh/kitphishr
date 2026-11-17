@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/cybercdh/kitphishr/internal/sources"
 )
@@ -20,6 +21,10 @@ type Response struct {
 	ContentType   string
 	Source        string
 	Intel         *sources.SourceIntel
+	// Origin is the feed URL whose path explosion produced this response.
+	Origin string
+	// Kind is the target kind that produced it (see sources.PhishUrls.Kind).
+	Kind string
 }
 
 type IndexRecord struct {
@@ -37,7 +42,8 @@ type IndexRecord struct {
 type Index struct {
 	mu     sync.Mutex
 	file   *os.File
-	hashes map[string]string // sha256 -> saved_path
+	hashes map[string]string    // sha256 -> saved_path
+	urls   map[string]time.Time // captured url -> latest capture time
 }
 
 func NewIndex(path string) (*Index, error) {
@@ -45,7 +51,7 @@ func NewIndex(path string) (*Index, error) {
 	if err != nil {
 		return nil, err
 	}
-	idx := &Index{file: f, hashes: make(map[string]string)}
+	idx := &Index{file: f, hashes: make(map[string]string), urls: make(map[string]time.Time)}
 	if err := idx.loadExisting(); err != nil {
 		f.Close()
 		return nil, err
@@ -67,6 +73,7 @@ func (i *Index) loadExisting() error {
 		if rec.SHA256 != "" && rec.SavedPath != "" && !rec.Deduplicated {
 			i.hashes[rec.SHA256] = rec.SavedPath
 		}
+		i.noteURL(rec)
 	}
 	if _, err := i.file.Seek(0, io.SeekEnd); err != nil {
 		return err
@@ -119,7 +126,33 @@ func (i *Index) Record(rec IndexRecord) error {
 	if !rec.Deduplicated && rec.SHA256 != "" && rec.SavedPath != "" {
 		i.hashes[rec.SHA256] = rec.SavedPath
 	}
+	i.noteURL(rec)
 	return nil
+}
+
+// noteURL remembers when rec.URL was captured. Caller holds i.mu (or is
+// loading before the index is shared).
+func (i *Index) noteURL(rec IndexRecord) {
+	if rec.URL == "" || rec.SavedPath == "" {
+		return
+	}
+	ts, err := time.Parse(time.RFC3339, rec.Timestamp)
+	if err != nil {
+		return
+	}
+	if prev, ok := i.urls[rec.URL]; !ok || ts.After(prev) {
+		i.urls[rec.URL] = ts
+	}
+}
+
+// CapturedWithin reports whether url was captured (saved or deduplicated)
+// within the last window. Kits at a URL can be replaced, so an old capture
+// does not suppress a re-download.
+func (i *Index) CapturedWithin(url string, window time.Duration) bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	ts, ok := i.urls[url]
+	return ok && time.Since(ts) < window
 }
 
 func (i *Index) Close() error {
