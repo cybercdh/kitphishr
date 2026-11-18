@@ -2,7 +2,6 @@ package analyze
 
 import (
 	"archive/zip"
-	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
@@ -93,16 +92,11 @@ func Run(args []string) {
 		os.Exit(2)
 	}
 
-	targets := fset.Args()
-	if len(targets) == 0 && !termutil.Isatty(os.Stdin.Fd()) {
-		sc := bufio.NewScanner(os.Stdin)
-		for sc.Scan() {
-			line := strings.TrimSpace(sc.Text())
-			if line != "" {
-				targets = append(targets, line)
-			}
-		}
+	var stdin io.Reader
+	if !termutil.Isatty(os.Stdin.Fd()) {
+		stdin = os.Stdin
 	}
+	targets := collectTargets(fset.Args(), stdin)
 	if len(targets) == 0 {
 		fset.Usage()
 		os.Exit(2)
