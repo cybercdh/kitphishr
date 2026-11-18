@@ -104,7 +104,7 @@ kitphishr pulls candidate URLs from the open-source phishing feeds below. Each f
 | `-o <path>` | `-` (stdout) | output destination |
 | `-brands <path>` | (built-in) | JSON file of brand signatures (see `internal/analyze/brands.go` for the default list and schema) |
 
-Targets can be passed as arguments or piped via stdin.
+Targets can be passed as arguments or piped via stdin. Wildcards are expanded by kitphishr itself, so `kitphishr analyze kits\*.zip` also works in PowerShell and cmd, which don't expand them. To pipe paths from PowerShell, send the path strings rather than the formatted listing: `(ls kits/*.zip).FullName | kitphishr analyze`.
 
 ## PhishTank configuration
 
